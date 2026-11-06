@@ -1,5 +1,11 @@
 # Contributing
 
+Bug reports, ideas and fixes are welcome as
+[GitHub issues](https://github.com/kmoneil/rest-core.zig/issues) and pull
+requests. For anything larger than a small fix, open an issue first so the
+approach can be agreed on. A vulnerability goes as [SECURITY.md](SECURITY.md)
+says, not in a public issue.
+
 ## Setup
 
 You need Zig 0.17.1. `zig build test` also runs two programs that must be

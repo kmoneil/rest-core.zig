@@ -546,10 +546,11 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
 }
 
 /// The most of a refused response's body a cloud's hook reads: error bodies
-/// are a few kilobytes, and a hook parses what it is given (often with
-/// std.json, whose maps hash every key with a fixed seed: kb/t7), so a
-/// server cannot make the client parse megabytes of error. `error_body_out`
-/// still holds all of it.
+/// are a few kilobytes, and a hook parses what it is given, often with
+/// std.json, whose maps hash every key with a fixed seed, so keys a server
+/// chose to collide would make the parse quadratic. Bounded, a server
+/// cannot make the client parse megabytes of error. `error_body_out` still
+/// holds all of it.
 pub const max_hook_body = 64 * 1024;
 
 fn hookBody(body: []const u8) []const u8 {

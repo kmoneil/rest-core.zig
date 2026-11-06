@@ -8,8 +8,9 @@ the client or pass a partial response off as a whole one.
 
 ## Reporting a vulnerability
 
-Email **kevin@oneil.xyz**. Please do not open a public issue for a
-vulnerability.
+Email **kevin@oneil.xyz**, or use GitHub's
+[private vulnerability reporting](https://github.com/kmoneil/rest-core.zig/security/advisories/new).
+Please do not open a public issue for a vulnerability.
 
 You will get an acknowledgement within 3 working days. Fixed issues are
 disclosed publicly within **90 days** of the report, sooner if a fix ships
