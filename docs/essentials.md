@@ -31,10 +31,10 @@ hands a client `testing.FakeTransport` instead.
   no bearer token, goes as given.
 - **What it refuses in a response.** One framed two ways, or with a
   Content-Length that is not digits (`error.HttpProtocolError`, the
-  connection closed); a head too long; a buffered body past
-  `max_response_bytes` (32 MiB, after decoding, so a gzip bomb stops
-  there); a compressed body that does not match its own trailer; a body
-  short of its length (`error.ConnectionResetByPeer`).
+  connection closed); a head past 8 KiB (std's `read_buffer_size`); a
+  buffered body past `max_response_bytes` (32 MiB, after decoding, so a
+  gzip bomb stops there); a compressed body that does not match its own
+  trailer; a body short of its length (`error.ConnectionResetByPeer`).
 - **Redirects** are never followed: a 3xx comes back to the caller, and the
   token stays with its host. **Proxies** are never used.
 

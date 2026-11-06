@@ -96,7 +96,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = catalog_tool.root_module, .test_runner = test_runner })).step);
     const check_catalog = b.addRunArtifact(catalog_tool);
     check_catalog.setCwd(b.path("."));
-    check_catalog.addArgs(&.{ "test/security/CATALOG.md", "test/security" });
+    // All of test/: the TLS tests in test/tls are security tests too.
+    check_catalog.addArgs(&.{ "test/security/CATALOG.md", "test" });
     check_catalog.has_side_effects = true;
     test_step.dependOn(&check_catalog.step);
     // tools/provenance.zig: what gcp.zig (or yaml.zig) changed, since the

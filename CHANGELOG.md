@@ -102,3 +102,7 @@ Until 1.0, minor versions may break the API; each entry says how.
   HTTP and REST client, each with its defence and the work that will
   prove it, checked against the tests by `zig build test`. SECURITY.md
   says how to report a vulnerability.
+- `zig build test-tls`, run in CI: TLS against `openssl s_server` with a
+  CA made for the run. A certificate no trusted root signed, or one for
+  another name, is refused; a head that spans many TLS records is read,
+  and one past std's 8 KiB is refused, never a crash.

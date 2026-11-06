@@ -16,6 +16,7 @@ zig build docs                          # the API reference, into zig-out/docs
 zig build lint                          # zigvet: code that compiles but is wrong
 zig build complexity                    # gnarl --check: complexity against complexity.baseline
 zig build security                      # the security suite, and its catalog checked against it
+zig build test-tls                      # TLS against openssl s_server: needs openssl, and a port to listen on
 zig build doc-examples                  # the docs' examples against examples/, and their links (-- --fix rewrites the copies)
 zig build provenance                    # what each ported file's source changed since its commit
 ```
@@ -34,7 +35,8 @@ with its gcp.zig numbers.
 `.github/workflows/ci.yml` runs, on every push to main and every pull
 request: `zig fmt --check` and the API docs; `zig build test` on Linux,
 macOS and Windows, which runs zigvet, gnarl, the security catalog and the
-docs check too; and `zig build test-release` on Linux. zigvet and gnarl
+docs check too; `zig build test-tls` on Linux, the TLS tests against
+`openssl s_server`; and `zig build test-release` on Linux. zigvet and gnarl
 come from `.github/actions/vet-tools`, each binary checked against a digest
 written there: zigvet's release is pinned in the action, gnarl's is
 `complexity.zon`'s `.gnarl`. To move to a new release, change the version,
@@ -48,8 +50,8 @@ CI, since it needs the sibling checkouts.
 attack on an HTTP and REST client, with its source, the defence, the test
 that proves it and a status. `zig build test` runs
 `tools/security_catalog.zig` over it: a covered row whose test is gone, or
-a test named `security: ...` under test/security that no row names, fails
-the build. A change that adds a defence turns its row covered with the
+a test named `security: ...` under test/ that no row names, fails the
+build. A change that adds a defence turns its row covered with the
 test; one that finds a defence missing adds a `gap` row.
 
 Every test build runs under `tools/test_runner.zig`: Zig 0.17's test
