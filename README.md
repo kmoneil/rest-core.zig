@@ -40,16 +40,18 @@ has not moved yet.
 
 ## Install
 
-Until there is a release, pin a commit by its hash, from a tarball of
-this repository made beside your own:
+Pin a release by its tag, which goes after `#`:
 
 ```sh
-git -C ../rest-core.zig archive --format=tar --prefix=rest_core/ <commit> \
-  build.zig build.zig.zon src LICENSE README.md CHANGELOG.md | gzip -n -9 > deps/rest_core-<commit>.tar.gz
-zig fetch --save=rest_core file:deps/rest_core-<commit>.tar.gz
+zig fetch --save=rest_core "git+https://github.com/kmoneil/rest-core.zig#v0.1.0"
 ```
 
-and import the module in `build.zig`:
+It should print `resolved ref "v0.1.0"`, and the hash it saves should
+name the version (`rest_core-0.1.0-...`). A tag given as `?ref=v0.1.0`
+instead fetches the default branch and still saves the `?ref=`, so the
+pin looks right and is not.
+
+Then import the module in `build.zig`:
 
 ```zig
 const rest_core = b.dependency("rest_core", .{}).module("rest_core");
