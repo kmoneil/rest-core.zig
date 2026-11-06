@@ -23,6 +23,23 @@ Until 1.0, minor versions may break the API; each entry says how.
 - `http_date`: HTTP dates (RFC 9110 5.6.7), read in all three of its
   formats and written as IMF-fixdate, for Retry-After, Date and
   `x-ms-date`.
+- `transport`: the `Transport` seam and `HttpTransport` over
+  `std.http.Client`, from gcp.zig, with a per-request time limit, streamed
+  bodies, and the std workarounds in docs/zig-std-workarounds.md. Unlike
+  gcp.zig's:
+  - a time limit the `Io` cannot run (no second task) is
+    `error.ConcurrencyUnavailable`, never an untimed request;
+  - a URL with a control byte, space or backslash, userinfo, or a
+    percent-encoded host is `error.InvalidEndpoint`, since std would send
+    a CR and LF in the path into the request line;
+  - a caller's Host, Content-Length, Transfer-Encoding, Connection, the
+    other hop-by-hop headers and Accept-Encoding, and a second
+    Authorization or Content-Type, are `error.InvalidRequestHeader`;
+  - a response with Transfer-Encoding beside Content-Length, or a
+    Content-Length that is not digits, is `error.HttpProtocolError` and
+    its connection is closed.
+- `testing.ScriptedServer`: a loopback server that answers with scripted
+  bytes and records what it was sent.
 - A security catalog, test/security/CATALOG.md: every known attack on an
   HTTP and REST client, each with its defence and the work that will
   prove it, checked against the tests by `zig build test`. SECURITY.md

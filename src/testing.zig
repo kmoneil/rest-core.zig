@@ -20,6 +20,144 @@ test "FakeClock: cancel protection is kept, and a blocked sleep is not canceled"
     try std.testing.expectError(error.Canceled, io.sleep(.fromMilliseconds(1), .awake));
 }
 
+/// Accepts connections on 127.0.0.1 and answers each request with the next
+/// scripted raw HTTP response. Records the raw requests it saw.
+pub const ScriptedServer = struct {
+    server: std.Io.net.Server,
+    port: u16,
+    /// Raw bytes to write per request; a connection closes after its last reply.
+    replies: []const []const u8,
+    /// Replies per connection before the server closes it.
+    per_connection: usize = 1,
+    /// When set, the server reads the request and never answers.
+    hang: bool = false,
+    /// When set, the server closes its first connection without reading.
+    close_on_accept: bool = false,
+    /// How long to hold a connection open after its last reply.
+    linger_ms: i64 = 0,
+    /// Writes the first reply's first `after` bytes, then waits for the
+    /// client to set `open`, up to two seconds, before the rest: a server
+    /// that has sent part of an answer and is still finding the rest.
+    pause: ?struct { after: usize, open: *std.atomic.Value(bool) } = null,
+    /// Whether a pause ran its two seconds out, the client never having
+    /// seen what came before it.
+    pause_timed_out: bool = false,
+    seen: [8][2048]u8 = undefined,
+    seen_len: [8]usize = @splat(0),
+    /// Per request: the length and CRC-32 (std's, IEEE) of the whole body,
+    /// however much of it fit in `seen`. Streaming uploads are asserted
+    /// through these.
+    seen_body_len: [8]u64 = @splat(0),
+    seen_body_crc: [8]u32 = @splat(0),
+    seen_count: usize = 0,
+    connections: usize = 0,
+
+    pub fn start(io: std.Io, replies: []const []const u8) !ScriptedServer {
+        return startOn(io, .{ .ip4 = .loopback(0) }, replies);
+    }
+
+    pub fn startOn(io: std.Io, address: std.Io.net.IpAddress, replies: []const []const u8) !ScriptedServer {
+        const server = try address.listen(io, .{ .reuse_address = true });
+        return .{
+            .server = server,
+            .port = server.socket.address.getPort(),
+            .replies = replies,
+        };
+    }
+
+    pub fn deinit(s: *ScriptedServer, io: std.Io) void {
+        s.server.deinit(io);
+    }
+
+    pub fn url(s: *const ScriptedServer, buf: []u8, path: []const u8) []const u8 {
+        return std.fmt.bufPrint(buf, "http://127.0.0.1:{d}{s}", .{ s.port, path }) catch unreachable;
+    }
+
+    pub fn request(s: *const ScriptedServer, index: usize) []const u8 {
+        return s.seen[index][0..s.seen_len[index]];
+    }
+
+    /// Serves every scripted reply, then returns.
+    pub fn run(s: *ScriptedServer, io: std.Io) !void {
+        if (s.close_on_accept) {
+            const stream = try s.server.accept(io);
+            s.connections += 1;
+            stream.close(io);
+            return;
+        }
+        var next: usize = 0;
+        while (next < s.replies.len or s.hang) {
+            const stream = try s.server.accept(io);
+            defer stream.close(io);
+            defer if (s.linger_ms > 0) io.sleep(.fromMilliseconds(s.linger_ms), .awake) catch {};
+            s.connections += 1;
+            var read_buf: [4096]u8 = undefined;
+            var reader = stream.reader(io, &read_buf);
+            var write_buf: [256]u8 = undefined;
+            var writer = stream.writer(io, &write_buf);
+            var served: usize = 0;
+            while (served < s.per_connection and (next < s.replies.len or s.hang)) : (served += 1) {
+                try s.readRequest(&reader.interface);
+                if (s.hang) {
+                    // Wait until the client gives up; the read fails or ends then.
+                    _ = reader.interface.discardRemaining() catch {};
+                    return;
+                }
+                var reply = s.replies[next];
+                if (next == 0) if (s.pause) |p| {
+                    try writer.interface.writeAll(reply[0..p.after]);
+                    try writer.interface.flush();
+                    reply = reply[p.after..];
+                    var waited: u32 = 0;
+                    while (!p.open.load(.acquire)) : (waited += 1) {
+                        if (waited == 200) {
+                            s.pause_timed_out = true;
+                            break;
+                        }
+                        try io.sleep(.fromMilliseconds(10), .awake);
+                    }
+                };
+                try writer.interface.writeAll(reply);
+                try writer.interface.flush();
+                next += 1;
+            }
+        }
+    }
+
+    fn readRequest(s: *ScriptedServer, r: *std.Io.Reader) !void {
+        const slot = s.seen_count % s.seen.len;
+        var len: usize = 0;
+        var content_length: u64 = 0;
+        while (true) {
+            const line = try r.takeDelimiterInclusive('\n');
+            @memcpy(s.seen[slot][len..][0..line.len], line);
+            len += line.len;
+            if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
+                const value = std.mem.trim(u8, line["content-length:".len..], " \r\n");
+                content_length = try std.fmt.parseInt(u64, value, 10);
+            }
+            if (std.mem.eql(u8, line, "\r\n")) break;
+        }
+        // A body larger than the slot is still read whole; what does not fit
+        // is captured by the running length and checksum instead.
+        var crc: std.hash.Crc32 = .init();
+        var left = content_length;
+        while (left > 0) {
+            const take: usize = @intCast(@min(left, 1024));
+            const bytes = try r.take(take);
+            crc.update(bytes);
+            const keep = @min(bytes.len, s.seen[slot].len - len);
+            @memcpy(s.seen[slot][len..][0..keep], bytes[0..keep]);
+            len += keep;
+            left -= bytes.len;
+        }
+        s.seen_len[slot] = len;
+        s.seen_body_len[slot] = content_length;
+        s.seen_body_crc[slot] = crc.final();
+        s.seen_count += 1;
+    }
+};
+
 /// An allocator that counts the blocks that were not all zeros when freed,
 /// to test code that must wipe secrets. Such code should free with `rawFree`
 /// after wiping: `Allocator.free` overwrites memory with a debug pattern in

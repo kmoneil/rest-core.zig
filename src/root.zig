@@ -8,6 +8,11 @@
 //!
 //! The parts arrive one by one, ported from gcp.zig's `core`.
 
+/// The HTTP seam: implement `transport.Transport` to send requests another
+/// way, or to fake the server in tests. `transport.HttpTransport` is the
+/// `std.http.Client` one, with a per-request time limit.
+pub const transport = @import("transport.zig");
+
 /// Base64, as JSON APIs carry bytes fields.
 pub const base64 = @import("base64.zig");
 
@@ -50,4 +55,5 @@ test {
     _ = @import("query.zig");
     _ = @import("testing.zig");
     _ = @import("timestamp.zig");
+    _ = @import("transport.zig");
 }

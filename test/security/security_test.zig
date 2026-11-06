@@ -21,4 +21,5 @@ test {
     _ = @import("requests_test.zig");
     _ = @import("secrets_test.zig");
     _ = @import("time_test.zig");
+    _ = @import("transport_test.zig");
 }

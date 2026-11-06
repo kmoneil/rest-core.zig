@@ -60,6 +60,7 @@ fix made in either can be carried to the other.
 | src/testing.zig | src/core/testing.zig (the helpers that need no transport) | eae944c |
 | src/timestamp.zig | src/core/timestamp.zig | eae944c |
 | src/http_date.zig | src/core/retry_after.zig (its HTTP-date parser and tests) | eae944c |
+| src/transport.zig | src/core/transport.zig | eae944c |
 
 Changed on the way: base64's and logging's headers no longer assume
 Google; query.zig gained `isDotSegment`, `hasDotSegment` and the checked
@@ -69,6 +70,13 @@ fakes arriving with the transport and the token seam. timestamp.zig's
 `parse` refuses a well-formed instant outside 0001 to 9999 in UTC, which
 gcp.zig's returns and its `format` then asserts on. http_date.zig is
 retry_after.zig's HTTP-date parser in a file of its own, with `parse` and
-`format` added.
+`format` added. transport.zig uses `std.compress.flate` directly (gcp.zig's
+flate.zig was a re-export); a time limit the `Io` cannot run is
+`error.ConcurrencyUnavailable` rather than an untimed request; and
+`checkUrl`, `checkRequestHeaders` and `checkFraming` refuse a URL std would
+send other than as written, a header the transport owns, and a response
+framed two ways (docs/zig-std-workarounds.md). Its tests' CRC-32C became
+std's CRC-32, and testing.zig gained `ScriptedServer`, whose body hash
+changed the same way.
 
 tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.
