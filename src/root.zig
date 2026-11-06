@@ -6,7 +6,8 @@
 //! signing, a wiping allocator, and fakes for tests. Each cloud's library
 //! adds its endpoints, error bodies, retry classes and credentials.
 //!
-//! The parts arrive one by one, ported from gcp.zig's `core`.
+//! Most of it began in gcp.zig's `core`; docs/development.md says what
+//! came from where, and what changed on the way.
 
 /// The HTTP seam: implement `transport.Transport` to send requests another
 /// way, or to fake the server in tests. `transport.HttpTransport` is the
