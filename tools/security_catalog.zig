@@ -1,4 +1,4 @@
-// From yaml.zig tools/security_catalog.zig at 9fe87e9 (itself after ekur's, ekur t65).
+// From yaml.zig tools/security_catalog.zig at 9fe87e9 (itself after ekur's, ekur t65); here its paths are joined with '/' on every OS.
 //! `security-catalog CATALOG.md DIR`: checks the security catalog against
 //! the tests, so the two cannot drift apart. After ekur's, less its
 //! compile-error fixtures.
@@ -133,7 +133,10 @@ const Checker = struct {
         var walker = try dir.walk(c.arena);
         while (try walker.next(c.io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
-            const path = try std.fs.path.join(c.arena, &.{ dir_path, entry.path });
+            // With `/`, as the catalog names files, whatever the OS joins
+            // with: on Windows the walker's own paths use `\`.
+            const path = try c.arena.print("{s}/{s}", .{ dir_path, entry.path });
+            std.mem.replaceScalar(u8, path, '\\', '/');
             const src = try c.root.readFileAlloc(c.io, path, c.arena, .limited(16 << 20));
             var at: usize = 0;
             while (std.mem.findPos(u8, src, at, "test \"security: ")) |i| {

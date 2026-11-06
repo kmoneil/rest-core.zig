@@ -120,7 +120,9 @@ fn checkTree(io: Io, arena: Allocator, root: Io.Dir, dirs: []const []const u8, c
         var walker = try dir.walk(arena);
         while (try walker.next(io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
-            const path = try std.fs.path.join(arena, &.{ dir_path, entry.path });
+            // With `/` on every OS, as reports and the tests name files.
+            const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.path });
+            std.mem.replaceScalar(u8, path, '\\', '/');
             const text = try root.readFileAlloc(io, path, arena, .limited(16 << 20));
             const first = text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
             const source = parse(first) orelse continue;
