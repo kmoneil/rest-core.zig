@@ -43,11 +43,11 @@ has not moved yet.
 Pin a release by its tag, which goes after `#`:
 
 ```sh
-zig fetch --save=rest_core "git+https://github.com/kmoneil/rest-core.zig#v0.2.0"
+zig fetch --save=rest_core "git+https://github.com/kmoneil/rest-core.zig#v0.2.1"
 ```
 
-It should print `resolved ref "v0.2.0"`, and the hash it saves should
-name the version (`rest_core-0.2.0-...`). A tag given as `?ref=v0.2.0`
+It should print `resolved ref "v0.2.1"`, and the hash it saves should
+name the version (`rest_core-0.2.1-...`). A tag given as `?ref=v0.2.1`
 instead fetches the default branch and still saves the `?ref=`, so the
 pin looks right and is not.
 

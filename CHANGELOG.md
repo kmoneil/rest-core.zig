@@ -2,7 +2,7 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
-## Unreleased
+## 0.2.1 (2026-11-06)
 
 - Fixed: `loop.pathOnOrigin` compared bytes, so a URL with its scheme's
   default port written out (`https://prices.azure.com:443/...`, as
