@@ -61,9 +61,10 @@ last group was found while porting it. Each was checked against Zig
   transport refuses both and closes the connection (`checkFraming`).
 - `std.compress.flate.Decompress` reads a gzip member's CRC-32 and length,
   and a zlib stream's Adler-32, and checks none of them, so a corrupted
-  compressed body decodes to wrong bytes without complaint. Not yet worked
-  around in the transport: the check comes when its body path is broken up
-  (test/security/CATALOG.md, RESP-08).
+  compressed body decodes to wrong bytes without complaint. The transport
+  hashes and counts what it decodes, on the buffered and the streamed path
+  alike, and refuses a body that does not match its trailer
+  (`TrailerCheck`).
 - `std.http.Client` reads `HTTP_PROXY` and `HTTPS_PROXY` only when asked,
   and HTTPS through its proxies goes in cleartext (Codeberg
   ziglang/zig#35294). The transport never asks for proxies.

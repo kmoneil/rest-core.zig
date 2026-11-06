@@ -110,6 +110,24 @@ test "security: CWE-409 a gzip body that expands past the limit is refused" {
     try testing.expectError(error.ResponseTooLarge, getOnce(reply, 1 << 20, &seen));
 }
 
+test "security: CWE-354 a compressed body that does not match its own trailer is refused" {
+    var compressed: std.Io.Writer.Allocating = try .initCapacity(testing.allocator, 64);
+    defer compressed.deinit();
+    var window: [std.compress.flate.max_window_len]u8 = undefined;
+    var gzip: std.compress.flate.Compress = try .init(&compressed.writer, &window, .gzip, .default);
+    try gzip.writer.writeAll("{\"balance\":100}");
+    try gzip.finish();
+    // A body corrupted on the way, its trailer's CRC-32 no longer its own:
+    // std's decoder reads the trailer and checks nothing, so it came back
+    // as a good body.
+    const body = compressed.written();
+    body[body.len - 8] ^= 0x01;
+    const reply = try std.fmt.allocPrint(testing.allocator, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.len, body });
+    defer testing.allocator.free(reply);
+    var seen: usize = 0;
+    try testing.expectError(error.HttpProtocolError, getOnce(reply, 1 << 20, &seen));
+}
+
 test "security: CWE-400 a stalling server is cut off at the time limit, and a limit that cannot run is refused" {
     const io = testing.io;
     var server: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"});

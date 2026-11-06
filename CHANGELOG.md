@@ -45,6 +45,9 @@ Until 1.0, minor versions may break the API; each entry says how.
   refuses a bearer token that is not non-empty visible ASCII
   (`error.InvalidRequestHeader`), since std would write CR and LF in one
   into the request.
+- The transport holds a gzip or deflate body to its own trailer (gzip's
+  CRC-32 and length, zlib's Adler-32), which std's decoder reads and never
+  checks: a body that does not match is `error.HttpProtocolError`.
 - `testing.FakeTransport` (answers from a script, records every request)
   and `testing.FaultTransport` (wraps a transport and injects faults), from
   gcp.zig. A recorded streamed body's checksum is `body_crc32`, std's
