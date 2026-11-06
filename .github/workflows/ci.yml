@@ -54,6 +54,21 @@ jobs:
       - name: zig build test
         run: zig build test --summary all
 
+  # TLS against a real server, openssl s_server with certificates made for
+  # the run: a certificate no trusted root signed, or for another name, is
+  # refused, and a head line longer than a TLS record never crashes.
+  tls:
+    name: tls
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: openssl
+        run: openssl version
+      - name: zig build test-tls
+        run: zig build test-tls --summary all
+
   # A package that depends on this one builds it in the mode it ships, and
   # in ReleaseFast `unreachable`, overflow and a bad cast are undefined
   # rather than a panic.
