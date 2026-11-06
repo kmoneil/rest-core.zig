@@ -119,10 +119,14 @@ from the token provider's `headers`.
 
 Zig errors carry no payload, so a client takes `&diagnostics` and fills it
 when a call fails: the HTTP status, the cloud's code ("NOT_FOUND",
-"ResourceNotFound"), the server's message, its request id, and the delay it
-asked for. `format` writes it on one line with the server's control bytes
-escaped, safe for a log or a terminal; `message()` and `code()` hand the
-bytes as they came.
+"ResourceNotFound"), the server's message, its request id and correlation
+id (ARM sends both: `x-ms-request-id` and `x-ms-correlation-request-id`,
+which its support asks for first), and the delay it asked for. `format`
+writes it on one line with the server's control bytes escaped, safe for a
+log or a terminal; `message()`, `code()` and the ids hand the bytes as they
+came. A module that logs a server's text itself, a request id at debug
+level say, writes it through `logging.escaped` (`{f}`), which escapes the
+same way.
 
 ## Credentials
 

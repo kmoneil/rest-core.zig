@@ -7,11 +7,14 @@
 //! What a refusal says is the cloud's to read (the request loop's hook
 //! does): a code such as Google's "NOT_FOUND" or Azure's
 //! "ResourceNotFound", the server's message, and the id the server gave the
-//! request, as Azure's `x-ms-request-id`, for a support ticket.
+//! request, as Azure's `x-ms-request-id`, for a support ticket, and the id
+//! a front end gave the operation as a whole, as Azure Resource Manager's
+//! `x-ms-correlation-request-id`, which its support asks for first.
 
 const Diagnostics = @This();
 
 const std = @import("std");
+const escaped = @import("logging.zig").escaped;
 const test_util = @import("testing.zig");
 
 /// HTTP status of the failed response, or 0 when the call failed without
@@ -27,13 +30,16 @@ retry_after_ms: ?u32 = null,
 code_len: u8 = 0,
 message_len: u16 = 0,
 request_id_len: u8 = 0,
+correlation_id_len: u8 = 0,
 buffer: [512]u8 = undefined,
 request_id_buffer: [max_request_id_len]u8 = undefined,
+correlation_id_buffer: [max_request_id_len]u8 = undefined,
 
 /// Longest code kept. Real codes are short, like "FAILED_PRECONDITION" or
 /// "AuthorizationFailed".
 pub const max_code_len = 64;
-/// Longest request id kept. Azure's are GUIDs, 36 bytes.
+/// Longest request id, or correlation id, kept. Azure's are GUIDs, 36
+/// bytes.
 pub const max_request_id_len = 64;
 
 /// The cloud's code for the failure, such as "NOT_FOUND", or "" when there
@@ -53,17 +59,24 @@ pub fn requestId(d: *const Diagnostics) []const u8 {
     return d.request_id_buffer[0..d.request_id_len];
 }
 
+/// The id a front end gave the failed operation as a whole, beside the
+/// request's own, or "".
+pub fn correlationId(d: *const Diagnostics) []const u8 {
+    return d.correlation_id_buffer[0..d.correlation_id_len];
+}
+
 pub fn clear(d: *Diagnostics) void {
     d.* = .{};
 }
 
 /// Records a failure, copying `code_text` and `message_text`, which must not
-/// point into `d.buffer`. The request id and the delay are cleared: a
-/// cloud's hook sets them after, from the same response.
+/// point into `d.buffer`. The ids and the delay are cleared: a cloud's
+/// hook sets them after, from the same response.
 pub fn set(d: *Diagnostics, http_status: u16, code_text: []const u8, message_text: []const u8) void {
     d.http_status = http_status;
     d.retry_after_ms = null;
     d.request_id_len = 0;
+    d.correlation_id_len = 0;
     const c = truncateUtf8(code_text, max_code_len);
     @memcpy(d.buffer[0..c.len], c);
     d.code_len = @intCast(c.len);
@@ -79,43 +92,51 @@ pub fn setRequestId(d: *Diagnostics, id: []const u8) void {
     d.request_id_len = @intCast(r.len);
 }
 
+/// Records the id a front end gave the operation as a whole, after `set`.
+pub fn setCorrelationId(d: *Diagnostics, id: []const u8) void {
+    const r = truncateUtf8(id, max_request_id_len);
+    @memcpy(d.correlation_id_buffer[0..r.len], r);
+    d.correlation_id_len = @intCast(r.len);
+}
+
 /// Records a failure that has no HTTP response, with a formatted message.
 pub fn print(d: *Diagnostics, comptime fmt: []const u8, args: anytype) void {
     d.http_status = 0;
     d.retry_after_ms = null;
     d.code_len = 0;
     d.request_id_len = 0;
+    d.correlation_id_len = 0;
     var w: std.Io.Writer = .fixed(&d.buffer);
     w.print(fmt, args) catch {}; // Keeps whatever fit.
     d.message_len = @intCast(truncateUtf8(w.buffered(), d.buffer.len).len);
 }
 
 /// Writes the failure for a log or a terminal: the status, the code, the
-/// request id and the message, with every control byte in what the server
-/// sent (an escape sequence, a line break that would forge a log line)
-/// written as `\xNN`. `message()` and `code()` hand the server's bytes as
-/// they came.
+/// ids and the message, with every control byte in what the server sent
+/// (an escape sequence, a line break that would forge a log line) written
+/// as `\xNN`, as `logging.escaped` writes it. `message()`, `code()` and
+/// the ids hand the server's bytes as they came.
 pub fn format(d: *const Diagnostics, w: *std.Io.Writer) std.Io.Writer.Error!void {
     if (d.http_status != 0) try w.print("HTTP {d}", .{d.http_status});
     if (d.code_len > 0) {
         if (d.http_status != 0) try w.writeByte(' ');
-        try writeEscaped(w, d.code());
+        try escaped(d.code()).format(w);
     }
-    if (d.request_id_len > 0) {
-        try w.writeAll(" (request ");
-        try writeEscaped(w, d.requestId());
-        try w.writeByte(')');
-    }
+    try d.formatIds(w);
     if (d.message_len > 0) {
         if (d.http_status != 0 or d.code_len > 0) try w.writeAll(": ");
-        try writeEscaped(w, d.message());
+        try escaped(d.message()).format(w);
     }
 }
 
-fn writeEscaped(w: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!void {
-    for (text) |c| {
-        if (c < 0x20 or c == 0x7f) try w.print("\\x{x:0>2}", .{c}) else try w.writeByte(c);
-    }
+/// ` (request r-1, correlation c-1)`, either alone, or nothing.
+fn formatIds(d: *const Diagnostics, w: *std.Io.Writer) std.Io.Writer.Error!void {
+    if (d.request_id_len == 0 and d.correlation_id_len == 0) return;
+    try w.writeAll(" (");
+    if (d.request_id_len > 0) try w.print("request {f}", .{escaped(d.requestId())});
+    if (d.request_id_len > 0 and d.correlation_id_len > 0) try w.writeAll(", ");
+    if (d.correlation_id_len > 0) try w.print("correlation {f}", .{escaped(d.correlationId())});
+    try w.writeByte(')');
 }
 
 /// The longest prefix of `text` that fits in `max` bytes without splitting a
@@ -136,27 +157,39 @@ test "Diagnostics.set copies and truncates" {
     try testing.expectEqualStrings("", d.code());
     try testing.expectEqualStrings("", d.message());
     try testing.expectEqualStrings("", d.requestId());
+    try testing.expectEqualStrings("", d.correlationId());
 
     d.set(404, "NOT_FOUND", "Resource not found (resource=orders).");
     d.setRequestId("8e6f8a35-5c1e-4b6c-9f2b-3a1d2c4e5f60");
+    d.setCorrelationId("5f1d2b3c-4a5b-4c6d-8e7f-90a1b2c3d4e5");
     try testing.expectEqual(404, d.http_status);
     try testing.expectEqualStrings("NOT_FOUND", d.code());
     try testing.expectEqualStrings("Resource not found (resource=orders).", d.message());
     try testing.expectEqualStrings("8e6f8a35-5c1e-4b6c-9f2b-3a1d2c4e5f60", d.requestId());
+    try testing.expectEqualStrings("5f1d2b3c-4a5b-4c6d-8e7f-90a1b2c3d4e5", d.correlationId());
 
     // A copy stays valid: accessors index the copy's own buffer.
     const copy = d;
     d.clear();
     try testing.expectEqualStrings("NOT_FOUND", copy.code());
+    try testing.expectEqualStrings("5f1d2b3c-4a5b-4c6d-8e7f-90a1b2c3d4e5", copy.correlationId());
     try testing.expectEqualStrings("", d.code());
     try testing.expectEqualStrings("", d.requestId());
+    try testing.expectEqualStrings("", d.correlationId());
 
     const long: [2000]u8 = @splat('m');
     d.set(500, &@as([100]u8, @splat('S')), &long);
     d.setRequestId(&long);
+    d.setCorrelationId(&long);
     try testing.expectEqual(Diagnostics.max_code_len, d.code().len);
     try testing.expectEqual(d.buffer.len - Diagnostics.max_code_len, d.message().len);
     try testing.expectEqual(Diagnostics.max_request_id_len, d.requestId().len);
+    try testing.expectEqual(Diagnostics.max_request_id_len, d.correlationId().len);
+
+    // A later failure's set drops both ids until its hook sets its own.
+    d.set(409, "Conflict", "y");
+    try testing.expectEqualStrings("", d.requestId());
+    try testing.expectEqualStrings("", d.correlationId());
 }
 
 test "Diagnostics.set never splits a UTF-8 sequence" {
@@ -168,14 +201,16 @@ test "Diagnostics.set never splits a UTF-8 sequence" {
     try testing.expectEqual(510, d.message().len);
 }
 
-test "Diagnostics.print formats client-side failures, and clears the code and request id" {
+test "Diagnostics.print formats client-side failures, and clears the code and ids" {
     var d: Diagnostics = .{};
     d.set(503, "UNAVAILABLE", "x");
     d.setRequestId("r-1");
+    d.setCorrelationId("c-1");
     d.print("message {d}: attribute key is {d} bytes", .{ 3, 300 });
     try testing.expectEqual(0, d.http_status);
     try testing.expectEqualStrings("", d.code());
     try testing.expectEqualStrings("", d.requestId());
+    try testing.expectEqualStrings("", d.correlationId());
     try testing.expectEqualStrings("message 3: attribute key is 300 bytes", d.message());
 
     const long: [600]u8 = @splat('x');
@@ -191,6 +226,20 @@ test "Diagnostics.format writes the failure on one line, the server's control by
     var w: std.Io.Writer = .fixed(&buf);
     try d.format(&w);
     try testing.expectEqualStrings("HTTP 404 NOT_FOUND (request r-1): no such bucket", w.buffered());
+
+    // ARM's two ids, both, then its correlation id alone, escaped as the
+    // rest is.
+    d.set(404, "ResourceNotFound", "gone");
+    d.setRequestId("r-1");
+    d.setCorrelationId("c-1");
+    w = .fixed(&buf);
+    try d.format(&w);
+    try testing.expectEqualStrings("HTTP 404 ResourceNotFound (request r-1, correlation c-1): gone", w.buffered());
+    d.set(404, "ResourceNotFound", "gone");
+    d.setCorrelationId("c-1\nINFO forged");
+    w = .fixed(&buf);
+    try d.format(&w);
+    try testing.expectEqualStrings("HTTP 404 ResourceNotFound (correlation c-1\\x0aINFO forged): gone", w.buffered());
 
     d.set(500, "X\x1b[2J", "line one\nINFO forged line\r\x07");
     w = .fixed(&buf);

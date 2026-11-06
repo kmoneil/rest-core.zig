@@ -18,6 +18,11 @@ Until 1.0, minor versions may break the API; each entry says how.
 - Fixed: with retries, `StreamCall.head_out` kept an earlier attempt's
   head, pointing into the response the retry had reset, when the latest
   attempt got no response. It is null then, as documented.
+- `Diagnostics.setCorrelationId` and `correlationId`: a second id beside
+  the request id, for ARM's `x-ms-correlation-request-id`; `format` writes
+  `(request r-1, correlation c-1)`. `logging.escaped(text)`, a `{f}` that
+  writes a server's text into a log line with its control bytes as `\xNN`,
+  as `Diagnostics.format` does.
 - `Engine.execute` and `Engine.stream` share one attempt and one retry
   decision, so the two entries cannot drift; behaviour is otherwise
   unchanged.
