@@ -45,6 +45,9 @@ Until 1.0, minor versions may break the API; each entry says how.
   refuses a bearer token that is not non-empty visible ASCII
   (`error.InvalidRequestHeader`), since std would write CR and LF in one
   into the request.
+- The transport refuses a compressed body with content after its stream (a
+  second gzip member, bytes after a zlib stream), `error.HttpProtocolError`:
+  gcp.zig's decoded the first member and dropped the rest in silence.
 - The transport holds a gzip or deflate body to its own trailer (gzip's
   CRC-32 and length, zlib's Adler-32), which std's decoder reads and never
   checks: a body that does not match is `error.HttpProtocolError`.

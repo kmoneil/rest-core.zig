@@ -797,10 +797,18 @@ fn finishFraming(source: BodySource, content_length: ?u64) Error!void {
     // A decompressor stops at the end of its own stream, which can leave
     // the last chunk unread (Google's front end sends gzip in chunks).
     if (source.encoding != .identity) {
-        _ = source.transfer.discardRemaining() catch {
+        const extra = source.transfer.discardRemaining() catch {
             connection.closing = true;
             return bodyError(request, source.dechunker, source.transfer, .identity);
         };
+        // What the framing held past the compressed stream is content, not
+        // framing: a second gzip member, or bytes after a zlib stream. std's
+        // decoder reads one member; refused rather than dropped, so a body is
+        // never cut short in silence.
+        if (extra > 0) {
+            connection.closing = true;
+            return error.HttpProtocolError;
+        }
     }
     if (source.dechunker) |d| {
         if (!d.done()) {
@@ -1693,6 +1701,43 @@ test "HttpTransport refuses a compressed body that does not match its trailer, b
                 .sink = if (streamed) StreamRequest.Sink{ .writer = &out } else .buffer,
             }, arena);
             try testing.expectEqualStrings(data, if (streamed) out.buffered() else res.body);
+        }
+    }
+}
+
+test "HttpTransport refuses a compressed body with content after its stream, never cutting it short" {
+    const io = testing.io;
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const first = try compressedForTest(arena, .gzip, "first member, ");
+    const second = try compressedForTest(arena, .gzip, "second member");
+    const two_members = try std.mem.concat(arena, u8, &.{ first, second });
+    const zlib = try compressedForTest(arena, .zlib, "one stream");
+    const trailing = try std.mem.concat(arena, u8, &.{ zlib, "garbage" });
+    for ([_][2][]const u8{ .{ two_members, "gzip" }, .{ trailing, "deflate" } }) |case| {
+        for ([_]bool{ false, true }) |chunked| {
+            for ([_]bool{ false, true }) |streamed| {
+                const reply = if (chunked)
+                    try std.fmt.allocPrint(arena, "HTTP/1.1 200 OK\r\nContent-Encoding: {s}\r\nTransfer-Encoding: chunked\r\n\r\n{x}\r\n{s}\r\n0\r\n\r\n", .{ case[1], case[0].len, case[0] })
+                else
+                    try std.fmt.allocPrint(arena, "HTTP/1.1 200 OK\r\nContent-Encoding: {s}\r\nContent-Length: {d}\r\n\r\n{s}", .{ case[1], case[0].len, case[0] });
+                var server: ScriptedServer = try .start(io, &.{reply});
+                defer server.deinit(io);
+                var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+                defer _ = serving.cancel(io) catch {};
+                var ht: HttpTransport = .init(testing.allocator, io, "t");
+                defer ht.deinit();
+                var buf: [128]u8 = undefined;
+                var out_buf: [256]u8 = undefined;
+                var out: std.Io.Writer = .fixed(&out_buf);
+                try testing.expectError(error.HttpProtocolError, ht.transport().sendStream(.{
+                    .method = .GET,
+                    .url = server.url(&buf, "/p"),
+                    .accept_encoding = .compressed,
+                    .sink = if (streamed) StreamRequest.Sink{ .writer = &out } else .buffer,
+                }, arena));
+            }
         }
     }
 }
