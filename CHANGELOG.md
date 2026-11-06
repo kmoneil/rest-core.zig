@@ -2,6 +2,16 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
+## Unreleased
+
+- `transport.Method.HEAD`, for Blob Storage's Get Blob Properties and
+  the like. `HttpTransport` sends it with no body and reads none back,
+  whatever the answer's Content-Length or Transfer-Encoding says, and the
+  connection stays in step for the next request (security catalog
+  RESP-14). `testing.FakeTransport` answers a HEAD with its scripted
+  status and headers and drops the body. Breaks: a `switch` over
+  `transport.Method` with no `else` needs a `.HEAD` prong.
+
 ## 0.1.0 (2026-11-06)
 
 - The repository: build, test runner, and the empty `rest_core` module.

@@ -9,7 +9,11 @@ const flate = std.compress.flate;
 const Allocator = std.mem.Allocator;
 const http = std.http;
 
-pub const Method = enum { GET, PUT, POST, DELETE, PATCH };
+/// HEAD is answered with a head alone: whatever Content-Length or
+/// Transfer-Encoding the answer carries describes the body a GET would
+/// get, and none is read (RFC 9110 9.3.2). Its status and headers are the
+/// answer, a refusal's included, as Blob Storage's `x-ms-error-code` is.
+pub const Method = enum { GET, PUT, POST, DELETE, PATCH, HEAD };
 
 pub const Request = struct {
     method: Method,
@@ -17,8 +21,8 @@ pub const Request = struct {
     url: []const u8,
     /// Token for `Authorization: Bearer <token>`; null sends no Authorization header.
     bearer: ?[]const u8 = null,
-    /// Sent with the `Content-Type` that `content_type` names. GET and
-    /// DELETE never carry a body.
+    /// Sent with the `Content-Type` that `content_type` names. GET, HEAD
+    /// and DELETE never carry a body.
     body: ?[]const u8 = null,
     content_type: ContentType = .json,
     /// Sent after the headers above, in order. A name or value that could
@@ -139,9 +143,9 @@ pub const StreamRequest = struct {
     };
 
     pub const Body = union(enum) {
-        /// No body and no Content-Length, as GET and DELETE send. POST, PUT
-        /// and PATCH send an empty one, `Content-Length: 0`, since Google's
-        /// front ends refuse a POST that gives no length (411).
+        /// No body and no Content-Length, as GET, HEAD and DELETE send.
+        /// POST, PUT and PATCH send an empty one, `Content-Length: 0`, since
+        /// Google's front ends refuse a POST that gives no length (411).
         none,
         /// Sent back to back with an exact Content-Length, without being
         /// copied into one buffer. A multipart body is framing, caller data,
@@ -301,7 +305,7 @@ pub const HttpTransport = struct {
     fn send(ptr: *anyopaque, req: Request, arena: Allocator) Error!Response {
         const self: *HttpTransport = @ptrCast(@alignCast(ptr));
         const has_body = switch (req.method) {
-            .GET, .DELETE => false,
+            .GET, .HEAD, .DELETE => false,
             .PUT, .POST, .PATCH => true,
         };
         const segments = [_][]const u8{req.body orelse ""};
@@ -456,15 +460,19 @@ pub const HttpTransport = struct {
         const headers = try collectHeaders(head, arena);
         try checkFraming(headers, connection);
         if (req.head_out) |out| out.* = .{ .status = status, .headers = headers };
-        if (status == 204 or status == 304) {
-            // These end at the head; the connection is ready for the next request.
-            request.reader.state = .ready;
-            return .{ .status = status, .headers = headers };
-        }
         if (status < 200) {
             // An informational response precedes the real one, which this
             // client does not wait for. The connection cannot be reused.
             connection.closing = true;
+            return .{ .status = status, .headers = headers };
+        }
+        if (req.method == .HEAD or status == 204 or status == 304) {
+            // These end at the head, whatever its framing headers say (RFC
+            // 9112 6.3): a HEAD's describe the body a GET would get. Reading
+            // that body would wait on bytes that never come, or take the
+            // next response's for it. The connection is ready for the next
+            // request.
+            request.reader.state = .ready;
             return .{ .status = status, .headers = headers };
         }
         // Only a success streams to the sink writer; an error body is
@@ -682,6 +690,7 @@ fn httpMethod(method: Method) http.Method {
         .POST => .POST,
         .DELETE => .DELETE,
         .PATCH => .PATCH,
+        .HEAD => .HEAD,
     };
 }
 
@@ -1607,6 +1616,73 @@ test "HttpTransport: 204 ends at the head instead of waiting for the connection 
     try testing.expectEqual(204, res.status);
     try testing.expectEqualStrings("", res.body);
     try testing.expect(started.untilNow(io, .awake).toMilliseconds() < 1500);
+}
+
+test "HttpTransport: a HEAD answer ends at its head, whatever its framing says, and keeps the connection" {
+    const io = testing.io;
+    // Each HEAD answer names a body it does not send, as Blob Storage's
+    // Get Blob Properties does. Read as a GET's, the first would wait for a
+    // megabyte, or take the next answers for its body. All four come on
+    // one connection, so the GET's answer arrives intact only if every HEAD
+    // ended at its blank line.
+    var server: ScriptedServer = try .start(io, &.{
+        "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nContent-Type: application/octet-stream\r\nx-ms-meta-token: w1\r\n\r\n",
+        "HTTP/1.1 404 The specified blob does not exist.\r\nContent-Length: 215\r\nx-ms-error-code: BlobNotFound\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    });
+    defer server.deinit(io);
+    server.per_connection = 4;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    // A limit, so a transport that waits for the body fails the test
+    // rather than hanging it.
+    const props = try ht.transport().send(.{ .method = .HEAD, .url = server.url(&buf, "/c/b"), .timeout_ms = 5000 }, arena.allocator());
+    try testing.expectEqual(200, props.status);
+    try testing.expectEqualStrings("", props.body);
+    try testing.expectEqualStrings("1048576", props.header("content-length").?);
+    try testing.expectEqualStrings("w1", props.header("x-ms-meta-token").?);
+
+    const missing = try ht.transport().send(.{ .method = .HEAD, .url = server.url(&buf, "/c/gone"), .timeout_ms = 5000 }, arena.allocator());
+    try testing.expectEqual(404, missing.status);
+    try testing.expectEqualStrings("", missing.body);
+    try testing.expectEqualStrings("BlobNotFound", missing.header("x-ms-error-code").?);
+
+    // Through the streaming entry, with a writer sink: nothing reaches it,
+    // and the head is still handed out.
+    var sink_buf: [16]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&sink_buf);
+    var head: ?StreamRequest.Head = null;
+    const streamed = try ht.transport().sendStream(.{
+        .method = .HEAD,
+        .url = server.url(&buf, "/c/b"),
+        .sink = .{ .writer = &sink },
+        .accept_encoding = .compressed,
+        .head_out = &head,
+        .timeout_ms = 5000,
+    }, arena.allocator());
+    try testing.expectEqual(200, streamed.status);
+    try testing.expectEqual(0, streamed.bytes_streamed);
+    try testing.expectEqual(0, sink.end);
+    try testing.expectEqualStrings("gzip", head.?.header("content-encoding").?);
+
+    const next = try ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/c/x"), .timeout_ms = 5000 }, arena.allocator());
+    try testing.expectEqualStrings("{}", next.body);
+    try serving.await(io);
+    try testing.expectEqual(1, server.connections);
+
+    // A HEAD goes with no body, so with no Content-Length or Content-Type
+    // (std writes both names in lower case).
+    try testing.expect(std.mem.startsWith(u8, server.request(0), "HEAD /c/b HTTP/1.1\r\n"));
+    try testing.expect(std.mem.indexOf(u8, server.request(0), "content-length:") == null);
+    try testing.expect(std.mem.indexOf(u8, server.request(0), "content-type:") == null);
+    try testing.expect(std.mem.startsWith(u8, server.request(2), "HEAD /c/b HTTP/1.1\r\n"));
 }
 
 test "HttpTransport: a rejected response head returns at once" {
