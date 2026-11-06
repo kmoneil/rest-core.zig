@@ -99,6 +99,22 @@ pub fn build(b: *std.Build) void {
     check_catalog.addArgs(&.{ "test/security/CATALOG.md", "test/security" });
     check_catalog.has_side_effects = true;
     test_step.dependOn(&check_catalog.step);
+    // tools/provenance.zig: what gcp.zig (or yaml.zig) changed, since the
+    // recorded commit, in each file ported from it. It reads the sibling
+    // checkouts with git, so it is a step of its own, not part of `test`;
+    // its own tests are.
+    const provenance_tool = b.addExecutable(.{ .name = "provenance", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/provenance.zig"),
+        .target = b.graph.host,
+        .optimize = .safe,
+    }) });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = provenance_tool.root_module, .test_runner = test_runner })).step);
+    const run_provenance = b.addRunArtifact(provenance_tool);
+    run_provenance.setCwd(b.path("."));
+    run_provenance.has_side_effects = true;
+    run_provenance.addPassthruArgs();
+    b.step("provenance", "List what each ported file's source changed since its recorded commit (needs the sibling checkouts)").dependOn(&run_provenance.step);
+
     const security_step = b.step("security", "Run the security suite and check its catalog (test/security)");
     security_step.dependOn(&b.addRunArtifact(security_tests).step);
     security_step.dependOn(&check_catalog.step);

@@ -47,6 +47,15 @@ Most of this library is gcp.zig's `src/core`, moved here. Each file that
 came from there starts with a line naming the gcp.zig file and commit, so a
 fix made in either can be carried to the other.
 
+`zig build provenance` reads those lines and asks git, in the checkouts
+beside this one (gcp.zig at `../zig-gcp-pubsub`, yaml.zig at `../yaml.zig`;
+`zig build provenance -- --checkout gcp.zig=DIR` names another), what
+changed in each source file since its recorded commit. It exits 0 when
+nothing did, 1 when something did, listing the commits, and 2 when a
+checkout or a commit is missing. To carry a fix: read the listed commits,
+make the same change here (or say in the commit why not), and move the
+file's first line, and its row below, to the source's new commit.
+
 | File here | From gcp.zig | At |
 | --- | --- | --- |
 | tools/test_runner.zig | tools/test_runner.zig | eae944c |

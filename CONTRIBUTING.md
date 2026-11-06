@@ -26,7 +26,8 @@ zig build fmt           # format the Zig
   function over a critical limit is refactored, not added to
   `complexity.baseline`.
 - A file ported from gcp.zig keeps its first line, naming the gcp.zig file
-  and commit it came from.
+  and commit it came from; `zig build provenance` lists what gcp.zig has
+  changed in it since.
 - A defence against a known attack has a row in
   [test/security/CATALOG.md](test/security/CATALOG.md) and a test named
   `security: ...` under test/security. Report a vulnerability as
