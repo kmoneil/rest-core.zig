@@ -4,6 +4,20 @@
 //! build test`, fails a row whose test is gone and a test no row names.
 //! Each port adds its files here as its rows turn covered.
 
+const std = @import("std");
+
+// Not an attack. This module compiles rest_core as a dependency, as a
+// consumer's test binary does, so it shows that logging's test-build capture
+// works there too: a consumer's tests stay quiet and can read what was logged.
+test "rest_core as a dependency: its logging is captured in a consumer's test build" {
+    const log = @import("rest_core").logging.Scoped(.rest_core_consumer_test);
+    log.capture.reset();
+    log.warn("seen {d}", .{1});
+    try std.testing.expectEqualStrings("warn: seen 1\n", log.capture.text());
+}
+
 test {
     _ = @import("rest_core");
+    _ = @import("requests_test.zig");
+    _ = @import("secrets_test.zig");
 }

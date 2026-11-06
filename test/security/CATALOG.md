@@ -53,7 +53,7 @@ cite a test in src/ where the defence is internal. Status is `covered`,
 |---|---|---|---|---|---|
 | REQ-01 | CR, LF or NUL in a header's name or value: header injection and request splitting | CWE-113, CWE-93; Go CVE-2023-29406 (an unchecked Host header), undici CVE-2023-23936 (CR and LF through Host) | `isValidHeaderName` and `isValidHeaderValue` refuse it before anything is sent | - | later t10 |
 | REQ-02 | A caller setting a header the transport owns: Host, Content-Length, Transfer-Encoding, Connection | CWE-444 | Refused before anything is sent | - | later t10 |
-| REQ-03 | A resource name from input that escapes its place in the URL: `../`, `%2F`, `?`, `#`, `@` | CWE-74, CWE-22 | `query` percent-encodes path segments and query values, with a test for each character that could move the request elsewhere | - | later t8 |
+| REQ-03 | A resource name from input that escapes its place in the URL: `../`, `%2F`, `?`, `#`, `@` | CWE-74, CWE-22 | `query` percent-encodes path segments and query values, so `/`, `?`, `#`, `%`, a backslash, whitespace and control bytes never leave a name's place; `@` and `:` stay literal, since only an authority gives them a meaning. A dot-segment (`.` or `..`) cannot be encoded away, since `%2E` normalizes back to a dot (RFC 3986 6.2.2.2), so `writeCheckedSegment`, `writeCheckedStrictSegment` and `writeCheckedPath` refuse one with `error.DotSegment` | test/security/requests_test.zig: security: CWE-22 a resource name cannot leave its segment of the URL ; test/security/requests_test.zig: security: CWE-22 a dot-segment from input is refused, not sent ; test/security/requests_test.zig: security: CWE-74 a query value cannot add a parameter or end the query | covered |
 | REQ-04 | A URL two parsers read differently, or one carrying CR or LF into the request line: userinfo, a backslash, whitespace, control bytes, a percent-encoded host | CWE-436, CWE-93, CWE-20; Python urllib CVE-2019-9740 (CR and LF in the query) and CVE-2019-9947 (in the path) | Refused before anything is sent | - | later t10 |
 
 ## The connection
@@ -82,9 +82,9 @@ cite a test in src/ where the defence is internal. Status is `covered`,
 
 | ID | Attack | Source | Defense | Test | Status |
 |---|---|---|---|---|---|
-| SECRET-01 | A token, the Authorization header or a URL's query written to a log | CWE-532 | Log lines carry methods, hosts, paths, statuses, counts, sizes and timings, never a token or the query | - | later t8 |
+| SECRET-01 | A token, the Authorization header or a URL's query written to a log | CWE-532 | Log lines carry methods, hosts, paths, statuses, counts, sizes and timings, never a token or the query. `logging` is only the sink; the lines are written by the request loop | - | later t22 |
 | SECRET-02 | A token in an error, in `Diagnostics` or in a request preview | CWE-200, CWE-532 | `Diagnostics` holds no request header; `PreparedRequest` shows Authorization redacted | - | later t15 |
-| SECRET-03 | A secret left in memory after it is freed, or in the old copy of a block that moved | CWE-226, CWE-244 | `WipingAllocator` zeroes a block before freeing it, and refuses to shrink or move one; `testing.WipeChecker` catches a block freed unwiped | - | later t8 |
+| SECRET-03 | A secret left in memory after it is freed, or in the old copy of a block that moved | CWE-226, CWE-244 | `WipingAllocator` zeroes a block before freeing it, and refuses to shrink or move one; `testing.WipeChecker` catches a block freed unwiped | test/security/secrets_test.zig: security: CWE-226 a secret is wiped before its block is freed ; test/security/secrets_test.zig: security: CWE-244 a secret's block is never shrunk or moved, which would leave bytes behind unwiped | covered |
 | SECRET-04 | An RSA private key left on the stack or in a buffer after signing | CWE-226 | The key is decoded on the stack, without allocating, and wiped | - | later t14 |
 
 ## RSA

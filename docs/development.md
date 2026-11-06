@@ -50,3 +50,19 @@ fix made in either can be carried to the other.
 | File here | From gcp.zig | At |
 | --- | --- | --- |
 | tools/test_runner.zig | tools/test_runner.zig | eae944c |
+| src/owned.zig | src/core/owned.zig | eae944c |
+| src/WipingAllocator.zig | src/core/WipingAllocator.zig | eae944c |
+| src/change.zig | src/core/change.zig | eae944c |
+| src/base64.zig | src/core/base64.zig | eae944c |
+| src/CountingWriter.zig | src/core/CountingWriter.zig | eae944c |
+| src/query.zig | src/core/query.zig | eae944c |
+| src/logging.zig | src/core/logging.zig | eae944c |
+| src/testing.zig | src/core/testing.zig (the helpers that need no transport) | eae944c |
+
+Changed on the way: base64's and logging's headers no longer assume
+Google; query.zig gained `isDotSegment`, `hasDotSegment` and the checked
+writers, which refuse a dot-segment from input; testing.zig holds only
+ByteGen, `repeat`, `fuzzBytes`, FakeClock, WipeChecker and RefuseOver, the
+fakes arriving with the transport and the token seam.
+
+tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.

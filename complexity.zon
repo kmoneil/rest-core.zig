@@ -14,7 +14,11 @@
     // counting writer, and timestamps. Named one by one, never as a glob over
     // src, since hot wins over cold where globs overlap: each file joins this
     // list in the change that ports it (gcp.zig's classes for the same files).
-    .hot = .{},
+    .hot = .{
+        "src/base64.zig",
+        "src/CountingWriter.zig",
+        "src/query.zig",
+    },
     // What only builds or tests: the build, the tools (tools/test_runner.zig
     // is std's runner, carried unchanged), the suites under test/, the
     // examples, and the fakes and helpers consumers test with.

@@ -6,9 +6,40 @@
 //! signing, a wiping allocator, and fakes for tests. Each cloud's library
 //! adds its endpoints, error bodies, retry classes and credentials.
 //!
-//! Nothing is here yet: the parts arrive one by one, ported from gcp.zig's
-//! `core`.
+//! The parts arrive one by one, ported from gcp.zig's `core`.
+
+/// Base64, as JSON APIs carry bytes fields.
+pub const base64 = @import("base64.zig");
+
+pub const Owned = @import("owned.zig").Owned;
+
+/// What an update does to a setting that can be taken away: `.keep`,
+/// `.set`, or `.clear`.
+pub const Change = @import("change.zig").Change;
+
+/// An allocator that wipes memory before freeing it, for secrets.
+pub const WipingAllocator = @import("WipingAllocator.zig");
+
+/// A writer that counts what passes through it to another writer.
+pub const CountingWriter = @import("CountingWriter.zig");
+
+/// Percent-encoding for request paths, and a query-string builder.
+pub const query = @import("query.zig");
+
+/// Logging under each module's own scope, captured in test builds.
+pub const logging = @import("logging.zig");
+
+/// Fakes and property-test helpers, for tests only.
+pub const testing = @import("testing.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
+    _ = @import("CountingWriter.zig");
+    _ = @import("WipingAllocator.zig");
+    _ = @import("base64.zig");
+    _ = @import("change.zig");
+    _ = @import("logging.zig");
+    _ = @import("owned.zig");
+    _ = @import("query.zig");
+    _ = @import("testing.zig");
 }
