@@ -23,6 +23,9 @@ body: []const u8,
 /// engine's own base URL. Allocates the URL in `arena`; the body is
 /// copied there too, so the result outlives the call's own memory. A path
 /// the loop refuses, one that does not start with `/`, is refused here too.
+/// A library that wraps `loop.Call` in its own type passes the `loop.Call`
+/// it builds for the engine, or one holding only `method`, `path` and
+/// `body`: nothing else here is read.
 pub fn fromCall(arena: Allocator, base_url: []const u8, call: loop.Call) (Allocator.Error || error{InvalidEndpoint})!PreparedRequest {
     if (call.path.len == 0 or call.path[0] != '/') return error.InvalidEndpoint;
     return .{
