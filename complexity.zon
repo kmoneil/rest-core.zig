@@ -1,0 +1,29 @@
+// gnarl's path classes (github.com/kmoneil/gnarl). `zig build complexity`,
+// and `zig build test` with it, runs `gnarl --check .`, which fails a
+// function over a critical limit for its class unless complexity.baseline
+// holds it at that number and it got no worse. A file named nowhere here is
+// normal. Nothing is vendored, so nothing is excluded; gnarl skips zig-pkg
+// and what git ignores by itself.
+.{
+    // The release the code is judged by: a gnarl that counts otherwise
+    // refuses --check. CI installs this one.
+    .gnarl = "0.7.0",
+    // What runs per request, response, retry or byte on a caller's path, held
+    // to the tightest limits: the transport, retries and the server's delay,
+    // the token seam, request previews, query and base64 encoding, the
+    // counting writer, and timestamps. Named one by one, never as a glob over
+    // src, since hot wins over cold where globs overlap: each file joins this
+    // list in the change that ports it (gcp.zig's classes for the same files).
+    .hot = .{},
+    // What only builds or tests: the build, the tools (tools/test_runner.zig
+    // is std's runner, carried unchanged), the suites under test/, the
+    // examples, and the fakes and helpers consumers test with.
+    .cold = .{
+        "build.zig",
+        "tools/**",
+        "test/**",
+        "examples/**",
+        "src/testing.zig",
+        "src/testing/**",
+    },
+}

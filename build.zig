@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
     // tools/test_runner.zig).
     const test_runner: std.Build.Step.Compile.TestRunner = .{ .path = b.path("tools/test_runner.zig"), .mode = .server };
 
-    const test_step = b.step("test", "Run the unit, property and fuzz-corpus tests, and check formatting");
+    const test_step = b.step("test", "Run the unit, property and fuzz-corpus tests, zig fmt --check, zigvet and gnarl");
     // The same tests and nothing else beside them, for CI's optimized jobs.
     const unit_step = b.step("test-unit", "Run the unit, property and fuzz-corpus tests, and nothing else");
     test_step.dependOn(unit_step);
@@ -60,6 +60,28 @@ pub fn build(b: *std.Build) void {
             .test_runner = test_runner,
         })).step);
     }
+
+    // zigvet (github.com/kmoneil/zigvet) reports code the compiler accepts
+    // that is almost certainly wrong. A program on the PATH, not a package;
+    // `zig build test` runs it, so no change is tested without it. Add test/
+    // and examples/ here when they exist. It skips zig-pkg and hidden
+    // directories by itself.
+    const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "tools" });
+    lint.setCwd(b.path("."));
+    b.step("lint", "Report code that compiles but is wrong (zigvet, from the PATH)").dependOn(&lint.step);
+    test_step.dependOn(&lint.step);
+
+    // gnarl (github.com/kmoneil/gnarl) holds each function to the complexity
+    // limits of its class in complexity.zon, which also names the gnarl
+    // release the code is judged by; complexity.baseline holds what is over
+    // a limit today, so `--check` fails only what is new or worse. A pass
+    // prints nothing. Always run: the build does not know what gnarl reads,
+    // and a cached step would pass a regression unseen.
+    const complexity = b.addSystemCommand(&.{ "gnarl", "--check", "." });
+    complexity.setCwd(b.path("."));
+    complexity.has_side_effects = true;
+    b.step("complexity", "Fail a function newly over its complexity limit (gnarl, from the PATH)").dependOn(&complexity.step);
+    test_step.dependOn(&complexity.step);
 
     const fmt_paths: []const std.Build.LazyPath = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("tools") };
     test_step.dependOn(&b.addFmt(.{ .paths = fmt_paths, .check = true }).step);
