@@ -142,6 +142,8 @@ pub const FakeTransport = struct {
 
     pub const Canned = struct {
         status: u16 = 200,
+        /// Never delivered for a HEAD request, as the real transport reads
+        /// no body for one, whatever its headers say.
         body: []const u8 = "{}",
         headers: []const Header = &.{},
         /// For a streamed sink: deliver only this many body bytes, then fail
@@ -253,7 +255,7 @@ pub const FakeTransport = struct {
             // Copy into the arena, as the real transport does, so ownership bugs show up.
             .respond => |canned| .{
                 .status = canned.status,
-                .body = try arena.dupe(u8, canned.body),
+                .body = if (req.method == .HEAD) "" else try arena.dupe(u8, canned.body),
                 .headers = try copyHeaders(arena, canned.headers),
             },
         };
@@ -280,6 +282,11 @@ pub const FakeTransport = struct {
             const headers = try copyHeaders(arena, canned.headers);
             out.* = .{ .status = canned.status, .headers = headers };
         }
+        // A HEAD's answer ends at its head: no body to deliver or cut.
+        if (req.method == .HEAD) return .{
+            .status = canned.status,
+            .headers = try copyHeaders(arena, canned.headers),
+        };
         if (canned.status < 300) if (req.sink == .writer) {
             const w = req.sink.writer;
             if (canned.cut_after) |cut| {
@@ -1380,6 +1387,42 @@ test "FakeTransport records requests and replays the script" {
     );
     try std.testing.expectEqual(3, fake.requests.items.len);
     try std.testing.expectEqualStrings("{}", (try fake.request(1)).body.?);
+}
+
+test "FakeTransport answers a HEAD with its head alone, as the real transport does" {
+    const size: Header = .{ .name = "Content-Length", .value = "1048576" };
+    var fake: FakeTransport = .init(std.testing.allocator, &.{
+        .{ .respond = .{ .headers = &.{size} } },
+        .{ .respond = .{ .status = 404, .body = "not sent", .headers = &.{.{ .name = "x-ms-error-code", .value = "BlobNotFound" }} } },
+        .{ .respond = .{ .body = "not sent either", .headers = &.{size}, .cut_after = 2 } },
+    });
+    defer fake.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const t = fake.transport();
+
+    const props = try t.send(.{ .method = .HEAD, .url = "http://x/c/b" }, arena.allocator());
+    try std.testing.expectEqual(200, props.status);
+    try std.testing.expectEqualStrings("", props.body);
+    try std.testing.expectEqualStrings("1048576", props.header("content-length").?);
+
+    const missing = try t.send(.{ .method = .HEAD, .url = "http://x/c/gone" }, arena.allocator());
+    try std.testing.expectEqual(404, missing.status);
+    try std.testing.expectEqualStrings("", missing.body);
+    try std.testing.expectEqualStrings("BlobNotFound", missing.header("x-ms-error-code").?);
+
+    // Streamed, nothing reaches the sink, and a scripted cut has no body to
+    // cut: the answer is whole at its head.
+    var sink_buf: [32]u8 = undefined;
+    var sink: std.Io.Writer = .fixed(&sink_buf);
+    var head: ?StreamRequest.Head = null;
+    const streamed = try t.sendStream(.{ .method = .HEAD, .url = "http://x/c/b", .sink = .{ .writer = &sink }, .head_out = &head }, arena.allocator());
+    try std.testing.expectEqual(200, streamed.status);
+    try std.testing.expectEqualStrings("", streamed.body);
+    try std.testing.expectEqual(0, streamed.bytes_streamed);
+    try std.testing.expectEqual(0, sink.end);
+    try std.testing.expectEqualStrings("1048576", head.?.header("content-length").?);
+    try std.testing.expectEqual(.HEAD, (try fake.streamRequest(0)).method);
 }
 
 test "FakeTransport records the headers a request carried" {

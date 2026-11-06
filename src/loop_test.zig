@@ -1126,6 +1126,39 @@ test "ARM: a Blob Storage error's code comes from x-ms-error-code" {
     try testing.expectEqualStrings("ConditionNotMet", h.diag.code());
 }
 
+test "ARM: a HEAD through executeStream: a blob's properties in its headers, a refusal's code too" {
+    var h: ArmH = undefined;
+    // The scripted bodies are never delivered: a HEAD's answer has none.
+    h.init(&.{
+        .{ .respond = .{ .status = 404, .body = "not sent", .headers = &.{
+            .{ .name = "x-ms-error-code", .value = "BlobNotFound" },
+            .{ .name = "x-ms-request-id", .value = "req-1" },
+        } } },
+        .{ .respond = .{ .body = "not sent", .headers = &.{
+            .{ .name = "Content-Length", .value = "1048576" },
+            .{ .name = "x-ms-meta-token", .value = "w1" },
+        } } },
+    });
+    defer h.deinit();
+    const e = h.engine();
+
+    e.begin();
+    try testing.expectError(error.NotFound, e.executeStream(&h.arena, .{ .method = .HEAD, .path = "/c/gone" }));
+    try testing.expectEqualStrings("BlobNotFound", h.diag.code());
+    try testing.expectEqualStrings("", h.diag.message());
+    try testing.expectEqualStrings("req-1", h.diag.requestId());
+
+    e.begin();
+    const res = try e.executeStream(&h.arena, .{ .method = .HEAD, .path = "/c/b" });
+    try testing.expectEqual(200, res.status);
+    try testing.expectEqualStrings("", res.body);
+    try testing.expectEqualStrings("1048576", res.header("content-length").?);
+    try testing.expectEqualStrings("w1", res.header("x-ms-meta-token").?);
+    const sent = try h.fake.streamRequest(1);
+    try testing.expectEqual(.HEAD, sent.method);
+    try testing.expectEqual(.none, sent.body_tag);
+}
+
 test "ARM: a 401 refreshes the token once, as it does for any cloud" {
     var h: ArmH = undefined;
     h.init(&.{ .{ .respond = .{ .status = 401, .body = "{\"error\":{\"code\":\"InvalidAuthenticationToken\"}}" } }, ok });

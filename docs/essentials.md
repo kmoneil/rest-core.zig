@@ -41,6 +41,13 @@ hands a client `testing.FakeTransport` instead.
   buffered body past `max_response_bytes` (32 MiB, after decoding, so a
   gzip bomb stops there); a compressed body that does not match its own
   trailer; a body short of its length (`error.ConnectionResetByPeer`).
+- **HEAD** is answered with a status and headers and no body: the
+  Content-Length or Transfer-Encoding on the answer describes the body a
+  GET would get, and none is read, so a blob's size is its
+  `header("content-length")`. A refusal is headers alone too, as Blob
+  Storage's `x-ms-error-code`. Through the loop, send a HEAD with
+  `executeStream`, whose result keeps the headers; `execute` returns only
+  the body, which for a HEAD is empty.
 - **Redirects** are never followed: a 3xx comes back to the caller, and the
   token stays with its host. **Proxies** are never used.
 
