@@ -106,7 +106,11 @@ a preview stays byte for byte what the call sends.
 A URL a server gives (a next page, an upload session, an operation to
 poll) is followed through `loop.pathOnOrigin(engine.base_url, url)`, which
 returns its path only when it is on the engine's own origin, so the token
-cannot go where a server points it.
+cannot go where a server points it. Origins compare as RFC 3986
+normalizes them: the scheme and host in any case, and the scheme's default
+port written out (`https://prices.azure.com:443/...`, as Azure's Retail
+Prices API writes its next pages) the same as none. Userinfo, another
+port, and an empty port are refused.
 
 ## A cloud's hook
 
