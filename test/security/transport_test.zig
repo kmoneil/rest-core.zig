@@ -161,6 +161,40 @@ test "security: CWE-400 a stalling server is cut off at the time limit, and a li
     try testing.expectEqual(seen, server.seen_count);
 }
 
+test "security: CWE-400 std's Group.async drops a cancel when it runs a task inline (Codeberg ziglang/zig#37192)" {
+    // This test holds std to its bug. When it fails, std has fixed it:
+    // catalog row CONN-08 can then be covered, and this test inverted.
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{ .async_limit = .nothing });
+    defer threaded.deinit();
+    const io = threaded.io();
+    const Job = struct {
+        fn sleepFor(job_io: std.Io, ms: i64) std.Io.Cancelable!void {
+            try job_io.sleep(.fromMilliseconds(ms), .awake);
+        }
+        // Two tasks in a group, as std's HostName.connect starts one per
+        // address. With no async capacity left, each runs inline.
+        fn run(job_io: std.Io) std.Io.Cancelable!void {
+            var group: std.Io.Group = .init;
+            group.async(job_io, sleepFor, .{ job_io, 300 });
+            group.async(job_io, sleepFor, .{ job_io, 300 });
+            try group.await(job_io);
+        }
+    };
+    const started = std.Io.Clock.awake.now(io);
+    var job = try io.concurrent(Job.run, .{io});
+    try io.sleep(.fromMilliseconds(50), .awake);
+    const outcome = job.cancel(io);
+    const elapsed = started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds();
+    if (outcome) |_| {
+        // The bug: the first task's cancel was dropped, the second slept its
+        // whole time with no cancel pending, and the job succeeded.
+        try testing.expect(elapsed >= 300);
+    } else |err| {
+        std.debug.print("std now returns {t} after {d} ms: Codeberg #37192 looks fixed; cover CONN-08\n", .{ err, elapsed });
+        return error.TestUnexpectedResult;
+    }
+}
+
 test "security: CWE-200 a redirect is never followed, so the token stays with its host" {
     const io = testing.io;
     var elsewhere: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"});

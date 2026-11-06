@@ -65,6 +65,15 @@ last group was found while porting it. Each was checked against Zig
   hashes and counts what it decodes, on the buffered and the streamed path
   alike, and refuses a body that does not match its trailer
   (`TrailerCheck`).
+- `std.Io.Group.async` runs a task inline once an `Io.Threaded`'s
+  `async_limit` is spent, and then drops the `error.Canceled` it returns
+  (Codeberg ziglang/zig#37192, open; reproduced on 0.17.1). std's
+  `HostName.connect`, which `std.http.Client` connects through, starts a
+  group task per address, so a cancel sent during a connect can be lost,
+  and the next address is tried with none pending. The transport's own
+  time-limit race uses `concurrent`, which never runs inline, but a
+  stalled connect can still outlive `timeout_ms` while the `Io`'s async
+  capacity is spent. Not worked around: test/security/CATALOG.md, CONN-08.
 - `std.http.Client` reads `HTTP_PROXY` and `HTTPS_PROXY` only when asked,
   and HTTPS through its proxies goes in cleartext (Codeberg
   ziglang/zig#35294). The transport never asks for proxies.
