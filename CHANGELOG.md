@@ -11,6 +11,16 @@ Until 1.0, minor versions may break the API; each entry says how.
   RESP-14). `testing.FakeTransport` answers a HEAD with its scripted
   status and headers and drops the body. Breaks: a `switch` over
   `transport.Method` with no `else` needs a `.HEAD` prong.
+- `loop.Call.head_out`: each attempt's status and headers, a success's
+  too, so `execute` reads a long-running write's 202 and the poll URL it
+  names without the streaming entry. `loop.Call.content_type`: a body
+  other than JSON, such as a form, through the loop.
+- Fixed: with retries, `StreamCall.head_out` kept an earlier attempt's
+  head, pointing into the response the retry had reset, when the latest
+  attempt got no response. It is null then, as documented.
+- `Engine.execute` and `Engine.stream` share one attempt and one retry
+  decision, so the two entries cannot drift; behaviour is otherwise
+  unchanged.
 
 ## 0.1.0 (2026-11-06)
 

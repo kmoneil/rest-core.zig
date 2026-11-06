@@ -57,9 +57,19 @@ pub const Call = struct {
     /// Path and query, starting with `/`. Appended to the base URL.
     path: []const u8,
     body: ?[]const u8 = null,
+    /// How `body` is encoded, sent as its Content-Type.
+    content_type: transport.ContentType = .json,
     /// Extra request headers, such as the `Content-Encoding` of a compressed
     /// body. The engine's own go after them.
     headers: []const transport.Header = &.{},
+    /// Pointed at each attempt's response status and headers, a success's
+    /// or a refusal's, for a caller that reads more of an answer than its
+    /// body: a long-running write's 202 and the `Location` or
+    /// `Azure-AsyncOperation` it names, or a poll told apart by its
+    /// status. Null when the latest attempt got no response. The headers
+    /// stay in `response` until the caller resets it; always null from
+    /// `executeDiscard`, which frees the response as it returns.
+    head_out: ?*?transport.StreamRequest.Head = null,
     /// False where the caller opted out of retries, as a publish does.
     retry: bool = true,
     /// Whether a failed attempt is worth another; null: the cloud's
@@ -114,7 +124,8 @@ pub const StreamCall = struct {
     restart: ?Restart = null,
     /// Filled with the response head as soon as it arrives, even when the
     /// body then fails; see `transport.StreamRequest.head_out`. With
-    /// engine-level retries the head is the latest attempt's.
+    /// engine-level retries the head is the latest attempt's, and null when
+    /// that attempt got none.
     head_out: ?*?transport.StreamRequest.Head = null,
     /// How long one attempt may take, instead of the engine's
     /// `request_timeout_ms`, for a request that is slow by nature. 0 removes
@@ -221,10 +232,9 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 .first_started = std.Io.Clock.awake.now(self.io),
                 .wipe = call.wipe,
                 .error_body_out = call.error_body_out,
+                .head_out = call.head_out,
             };
-            // Set again by each failed response; the reset before the next
-            // attempt clears it with the body it points at.
-            if (call.error_body_out) |out| out.* = null;
+            attempts.clearOuts();
             while (true) : (attempts.number += 1) {
                 const bearer = try self.beginAttempt(scratch.allocator());
                 const started = std.Io.Clock.awake.now(self.io);
@@ -233,6 +243,7 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                     .url = url,
                     .bearer = bearer,
                     .body = call.body,
+                    .content_type = call.content_type,
                     .headers = headers,
                     .timeout_ms = self.request_timeout_ms,
                 }, response.allocator());
@@ -298,7 +309,9 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 .retryable = call.retryable orelse Cloud.retryable,
                 .window_ms = call.retry_window_ms,
                 .first_started = std.Io.Clock.awake.now(self.io),
+                .head_out = call.head_out,
             };
+            attempts.clearOuts();
             const body = requestBody(call.body, streamed);
             while (true) : (attempts.number += 1) {
                 const bearer = try self.beginAttempt(scratch.allocator());
@@ -356,10 +369,13 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             var wiping: WipingAllocator = .init(self.gpa);
             var response: std.heap.ArenaAllocator = .init(if (call.wipe) wiping.allocator() else self.gpa);
             defer response.deinit();
-            // The response goes before this returns, and a failed body with it.
+            // The response goes before this returns, and with it a failed
+            // body and any head.
             var discarding = call;
             if (discarding.error_body_out) |out| out.* = null;
+            if (discarding.head_out) |out| out.* = null;
             discarding.error_body_out = null;
+            discarding.head_out = null;
             _ = try self.execute(&response, discarding);
         }
 
@@ -421,10 +437,29 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             wipe: bool = false,
             /// `Call.error_body_out`, cleared with the response it points into.
             error_body_out: ?*?[]const u8 = null,
+            /// The call's `head_out`, cleared as `error_body_out` is.
+            head_out: ?*?transport.StreamRequest.Head = null,
             /// The attempt under way, from 1.
             number: u32 = 1,
             /// Whether the fresh-token retry after a 401 has been spent.
             reauthenticated: bool = false,
+
+            /// Nulls what points into the response: before the first
+            /// attempt, and whenever the response is reset, so an attempt
+            /// that gets no response leaves none of an earlier one's.
+            fn clearOuts(a: *const Attempts) void {
+                if (a.error_body_out) |out| out.* = null;
+                if (a.head_out) |out| out.* = null;
+            }
+
+            /// Clears a failed attempt's response for the next. A call that
+            /// carries secrets gives the memory back, so the wrapping
+            /// allocator wipes it now; every other call keeps it for the
+            /// next attempt.
+            fn reset(a: *const Attempts, response: *std.heap.ArenaAllocator) void {
+                a.clearOuts();
+                _ = response.reset(if (a.wipe) .free_all else .retain_capacity);
+            }
         };
 
         /// An attempt that failed: its error, its response's status (0 with
@@ -455,11 +490,14 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             return self.bearerToken(scratch);
         }
 
-        /// An attempt's response, logged: null for a 2xx, which clears
-        /// `Diagnostics`; else the failure as the hook maps it, with the
-        /// delay the response asked for.
+        /// An attempt's response, logged and its head handed out: null for
+        /// a 2xx, which clears `Diagnostics`; else the failure as the hook
+        /// maps it, with the delay the response asked for.
         fn answered(self: Self, scratch: Allocator, a: *const Attempts, res: Response, started: std.Io.Timestamp) Allocator.Error!?Failed {
             self.logAttempt(a, "{d}", res.status, started);
+            // A streaming transport has set it already, to the same; one
+            // that buffers has nowhere to.
+            if (a.head_out) |out| out.* = .{ .status = res.status, .headers = res.headers };
             if (res.status >= 200 and res.status < 300) {
                 if (self.diagnostics) |d| d.clear();
                 return null;
@@ -489,9 +527,9 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         fn again(self: Self, a: *Attempts, response: *std.heap.ArenaAllocator, failed: Failed) Error!void {
             switch (self.next(a, failed)) {
                 .stop => return failed.err,
-                .now => resetResponse(response, a.wipe, a.error_body_out),
+                .now => a.reset(response),
                 .after_ms => |ms| {
-                    resetResponse(response, a.wipe, a.error_body_out);
+                    a.reset(response);
                     try self.io.sleep(.fromMilliseconds(ms), .awake);
                 },
             }
@@ -622,15 +660,6 @@ fn appendNew(scratch: Allocator, all: *std.ArrayList(transport.Header), more: []
 /// names, so they stay out of it.
 fn logPath(path: []const u8) []const u8 {
     return path[0 .. std.mem.indexOfScalar(u8, path, '?') orelse path.len];
-}
-
-/// Clears the failed attempt's body. A call that carries secrets gives the
-/// memory back, so the wrapping allocator wipes it now; every other call
-/// keeps it for the next attempt.
-fn resetResponse(response: *std.heap.ArenaAllocator, wipe: bool, error_body_out: ?*?[]const u8) void {
-    // The body it pointed at goes with the reset.
-    if (error_body_out) |out| out.* = null;
-    _ = response.reset(if (wipe) .free_all else .retain_capacity);
 }
 
 /// What a streaming call sends: the reader's bytes when it has them, else

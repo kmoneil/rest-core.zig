@@ -979,6 +979,74 @@ test "executeStream: a success returns status, headers and body, and sends segme
     try testing.expectEqualStrings("hello", sent.body_prefix);
 }
 
+test "head_out: the latest attempt's head, null when it got no response, on both entries" {
+    // A 503's head, then a dropped connection: the 503's head lived in the
+    // response the retry reset, so nothing may point at it after.
+    const script = [_]Reply{ unavailable, .{ .fail = error.ConnectionResetByPeer } };
+    var h: H = undefined;
+    h.init(&script);
+    defer h.deinit();
+    var e = h.engine();
+    e.retry = .{ .max_attempts = 2 };
+    var head: ?transport.StreamRequest.Head = null;
+    try testing.expectError(error.ConnectionResetByPeer, e.executeStream(&h.arena, .{ .method = .GET, .path = "/v1/things", .head_out = &head }));
+    try testing.expectEqual(null, head);
+
+    var hb: H = undefined;
+    hb.init(&script);
+    defer hb.deinit();
+    var eb = hb.engine();
+    eb.retry = .{ .max_attempts = 2 };
+    var buffered_head: ?transport.StreamRequest.Head = null;
+    try testing.expectError(error.ConnectionResetByPeer, eb.execute(&hb.arena, .{ .method = .GET, .path = "/v1/things", .head_out = &buffered_head }));
+    try testing.expectEqual(null, buffered_head);
+}
+
+test "head_out: execute hands out a success's status and headers, and a refusal's" {
+    var h: H = undefined;
+    // An accepted long-running write names where to poll, and how long to
+    // wait first, beside an empty body.
+    h.init(&.{
+        .{ .respond = .{ .status = 202, .body = "", .headers = &.{
+            .{ .name = "Location", .value = "https://service.example.com/v1/operations/7" },
+            .{ .name = "Retry-After", .value = "10" },
+        } } },
+        .{ .respond = .{ .status = 404, .body = "{\"error\":{\"status\":\"NOT_FOUND\"}}", .headers = &.{.{ .name = "x-request-id", .value = "r-9" }} } },
+    });
+    defer h.deinit();
+    const e = h.engine();
+    var head: ?transport.StreamRequest.Head = .{ .status = 1, .headers = &.{} };
+    const body = try e.execute(&h.arena, .{ .method = .PUT, .path = "/v1/things/a", .body = "{}", .head_out = &head });
+    try testing.expectEqualStrings("", body);
+    try testing.expectEqual(202, head.?.status);
+    try testing.expectEqualStrings("https://service.example.com/v1/operations/7", head.?.header("location").?);
+    try testing.expectEqualStrings("10", head.?.header("retry-after").?);
+
+    try testing.expectError(error.NotFound, e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things/b", .head_out = &head }));
+    try testing.expectEqual(404, head.?.status);
+    try testing.expectEqualStrings("r-9", head.?.header("x-request-id").?);
+}
+
+test "head_out: executeDiscard leaves it null, as it frees the response" {
+    var h: H = undefined;
+    h.init(&.{.{ .respond = .{ .status = 202, .body = "", .headers = &.{.{ .name = "Location", .value = "/v1/operations/7" }} } }});
+    defer h.deinit();
+    var head: ?transport.StreamRequest.Head = .{ .status = 1, .headers = &.{} };
+    try h.engine().executeDiscard(.{ .method = .DELETE, .path = "/v1/things/1", .head_out = &head });
+    try testing.expectEqual(null, head);
+}
+
+test "content_type: a call's body goes as the type it names, JSON unless it says" {
+    var h: H = undefined;
+    h.init(&.{ ok, ok });
+    defer h.deinit();
+    const e = h.engine();
+    _ = try e.execute(&h.arena, .{ .method = .POST, .path = "/token", .body = "grant_type=client_credentials", .content_type = .form });
+    _ = try e.execute(&h.arena, .{ .method = .POST, .path = "/v1/things", .body = "{}" });
+    try testing.expectEqual(.form, (try h.fake.request(0)).content_type);
+    try testing.expectEqual(.json, (try h.fake.request(1)).content_type);
+}
+
 test "executeStream: a buffered sink retries statuses and transport failures alike" {
     var h: H = undefined;
     h.init(&.{ unavailable, .{ .fail = error.ConnectionResetByPeer }, ok });
