@@ -48,6 +48,19 @@ Until 1.0, minor versions may break the API; each entry says how.
 - The transport holds a gzip or deflate body to its own trailer (gzip's
   CRC-32 and length, zlib's Adler-32), which std's decoder reads and never
   checks: a body that does not match is `error.HttpProtocolError`.
+- `Engine(log_scope, Cloud)`, the request loop, from gcp.zig's `rpc`: a
+  token per attempt and a fresh one after a 401, retries with full-jitter
+  backoff and the server's delay as a floor (headers and, through the
+  cloud's hook, the body), a retry window, wiping, and logs without the
+  query. A cloud supplies `RefusalError`, `refusal`, `retryable` and
+  `bodyDelayMs`. Unlike gcp.zig's: no quota project (the engine's
+  `headers`), a path that does not start with `/` is
+  `error.InvalidEndpoint`, a hook reads at most 64 KiB of a refused body,
+  and `loop.pathOnOrigin` follows a server's URL only on the engine's
+  origin.
+- `Diagnostics`: status, the cloud's `code` (gcp.zig's `status`), the
+  message, a request id, the server's delay, and `format`, which escapes
+  the server's control bytes.
 - `testing.FakeTransport` (answers from a script, records every request)
   and `testing.FaultTransport` (wraps a transport and injects faults), from
   gcp.zig. A recorded streamed body's checksum is `body_crc32`, std's

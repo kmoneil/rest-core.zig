@@ -13,6 +13,15 @@
 /// `std.http.Client` one, with a per-request time limit.
 pub const transport = @import("transport.zig");
 
+/// The request loop every module of a cloud runs: credentials, retries,
+/// the server's delay, and its refusal read by the cloud's hook.
+pub const loop = @import("loop.zig");
+pub const Engine = loop.Engine;
+
+/// Details of the most recent failed call: status, the cloud's code, the
+/// server's message, its request id and delay.
+pub const Diagnostics = @import("Diagnostics.zig");
+
 /// The seam through which a cloud's modules get bearer tokens.
 pub const TokenProvider = @import("TokenProvider.zig");
 pub const StaticToken = @import("StaticToken.zig");
@@ -57,6 +66,8 @@ pub const testing = @import("testing.zig");
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("CountingWriter.zig");
+    _ = @import("Diagnostics.zig");
+    _ = @import("loop.zig");
     _ = @import("StaticToken.zig");
     _ = @import("TokenProvider.zig");
     _ = @import("WipingAllocator.zig");

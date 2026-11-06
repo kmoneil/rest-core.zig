@@ -65,6 +65,8 @@ fix made in either can be carried to the other.
 | src/StaticToken.zig | src/core/StaticToken.zig | eae944c |
 | src/retry.zig | src/core/retry.zig | eae944c |
 | src/retry_after.zig | src/core/retry_after.zig (its header readers and tests) | eae944c |
+| src/loop.zig, src/loop_test.zig | src/core/rpc.zig | eae944c |
+| src/Diagnostics.zig | src/core/errors.zig (its Diagnostics and truncateUtf8) | eae944c |
 
 Changed on the way: base64's and logging's headers no longer assume
 Google; query.zig gained `isDotSegment`, `hasDotSegment` and the checked
@@ -94,6 +96,15 @@ statuses gcp.zig retries (RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE,
 DEADLINE_EXCEEDED) are its hook's. retry_after.zig reads only headers,
 `x-ms-retry-after-ms` added: `serverDelayMs` takes no body or arena, the
 `google.rpc.RetryInfo` delay and its `durationMs` stay Google's, and
-`Asked` lost its `retry_info` form.
+`Asked` lost its `retry_info` form. loop.zig is rpc.zig's engine made
+generic over a cloud's hook (`Engine(log_scope, Cloud)`): Google's error
+body, RetryInfo and the gRPC statuses it retries are gcp.zig's hook's, the
+quota project became the engine's `headers`, a 401 is known by its status
+rather than by Google's error name, and the per-call `decode_error` and
+engine `classify_refusal` became one engine `refusal`. Its tests run under
+two hooks written in the tests, Google's shape and Azure ARM's. It also
+refuses a path that does not start with `/`, bounds the body a hook reads,
+and adds `pathOnOrigin`. Diagnostics.zig is errors.zig's with `status`
+named `code`, a request id, and `format`, which escapes control bytes.
 
 tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.

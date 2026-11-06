@@ -18,6 +18,7 @@
         "src/base64.zig",
         "src/CountingWriter.zig",
         "src/http_date.zig",
+        "src/loop.zig",
         "src/query.zig",
         "src/retry.zig",
         "src/retry_after.zig",
@@ -35,5 +36,6 @@
         "examples/**",
         "src/testing.zig",
         "src/testing/**",
+        "src/*_test.zig",
     },
 }
