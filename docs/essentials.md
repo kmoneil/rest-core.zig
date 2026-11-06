@@ -20,6 +20,12 @@ hands a client `testing.FakeTransport` instead.
   the `Io`'s `async_limit` is spent, a connect that stalls can outlive the
   time limit, since std's connect loses the cancel then (Codeberg
   ziglang/zig#37192); give the `Io` async capacity to spare.
+- **TLS** is std's: the chain checked against the system's roots, the
+  name against the host, the dates against the clock, with no option to
+  turn any of it off. One known hole, std's: Zig 0.17.1 takes a
+  certificate signed by one that is not a CA (Codeberg ziglang/zig#35877),
+  so a man in the middle holding any publicly trusted certificate can pass
+  for any host. SECURITY.md says more.
 - **What it refuses before sending.** A URL with a control byte, a space or
   a backslash, userinfo, or a percent-encoded host
   (`error.InvalidEndpoint`): std would write a CR and LF in the path into

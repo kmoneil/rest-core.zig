@@ -1,8 +1,9 @@
-//! TLS against a real server: certificates refused as they must be, and a
-//! response head line longer than a TLS record. It makes a CA and a server
-//! certificate for the run and starts `openssl s_server`, so it needs
-//! `openssl` on the PATH and a machine where a test may listen on a port:
-//! CI runs it (`zig build test-tls`); `zig build test` does not.
+//! TLS against a real server, `openssl s_server` with certificates made for
+//! the run: what the transport refuses, what a head past a TLS record does,
+//! and what std's TLS client gets wrong. Each test of the last holds std to
+//! its bug, so it fails once std fixes it. It needs `openssl` on the PATH
+//! and a machine where a test may listen on a port: CI runs it (`zig build
+//! test-tls`); `zig build test` only compiles it.
 
 const std = @import("std");
 const rest_core = @import("rest_core");
@@ -24,14 +25,58 @@ fn run(io: Io, dir: Io.Dir, argv: []const []const u8) !void {
     return error.CommandFailed;
 }
 
-/// A CA, and a server certificate it signed for `localhost` alone.
+fn fileName(buf: []u8, name: []const u8, ext: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}.{s}", .{ name, ext });
+}
+
+/// A certificate to make: `name.pem`, its key in `name.key`, signed by
+/// `by` (`by.pem` and `by.key`) with the extensions in the file `ext`.
+const Issue = struct {
+    name: []const u8,
+    subject: []const u8,
+    ext: []const u8,
+    by: []const u8 = "ca",
+    rsa: bool = false,
+};
+
+fn issue(io: Io, dir: Io.Dir, o: Issue) !void {
+    var key: [32]u8 = undefined;
+    var csr: [32]u8 = undefined;
+    var pem: [32]u8 = undefined;
+    var by_pem: [32]u8 = undefined;
+    var by_key: [32]u8 = undefined;
+    const k = try fileName(&key, o.name, "key");
+    const c = try fileName(&csr, o.name, "csr");
+    if (o.rsa) {
+        try run(io, dir, &.{ "openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", k });
+    } else {
+        try run(io, dir, &.{ "openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", k });
+    }
+    try run(io, dir, &.{ "openssl", "req", "-new", "-key", k, "-out", c, "-subj", o.subject });
+    try run(io, dir, &.{ "openssl", "x509", "-req", "-in", c, "-CA", try fileName(&by_pem, o.by, "pem"), "-CAkey", try fileName(&by_key, o.by, "key"), "-CAcreateserial", "-out", try fileName(&pem, o.name, "pem"), "-days", "2", "-extfile", o.ext });
+}
+
+/// The run's certificates, each `NAME.pem` with its key in `NAME.key`:
+///
+/// - `ca`, the root the tests trust, for 30 days;
+/// - `server`, P-256, for localhost, signed by `ca`;
+/// - `rsa`, RSA 2048, for localhost, signed by `ca`: a key std's TLS 1.2
+///   can use;
+/// - `leaf`, P-256, for attacker.example, signed by `ca`: CA:FALSE, a key
+///   that may only sign data, such as anyone can have for a domain of
+///   their own;
+/// - `forged`, P-256, for localhost, signed by `leaf`.
+///
+/// All but `ca` last 2 days.
 fn makeCertificates(io: Io, dir: Io.Dir) !void {
+    try dir.writeFile(io, .{ .sub_path = "localhost.cnf", .data = "subjectAltName=DNS:localhost\n" });
+    try dir.writeFile(io, .{ .sub_path = "leaf.cnf", .data = "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nsubjectAltName=DNS:attacker.example\n" });
     try run(io, dir, &.{ "openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "ca.key" });
-    try run(io, dir, &.{ "openssl", "req", "-x509", "-new", "-key", "ca.key", "-out", "ca.pem", "-days", "2", "-subj", "/CN=rest-core test CA" });
-    try run(io, dir, &.{ "openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "server.key" });
-    try run(io, dir, &.{ "openssl", "req", "-new", "-key", "server.key", "-out", "server.csr", "-subj", "/CN=localhost" });
-    try dir.writeFile(io, .{ .sub_path = "san.cnf", .data = "subjectAltName=DNS:localhost\n" });
-    try run(io, dir, &.{ "openssl", "x509", "-req", "-in", "server.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-out", "server.pem", "-days", "2", "-extfile", "san.cnf" });
+    try run(io, dir, &.{ "openssl", "req", "-x509", "-new", "-key", "ca.key", "-out", "ca.pem", "-days", "30", "-subj", "/CN=rest-core test CA" });
+    try issue(io, dir, .{ .name = "server", .subject = "/CN=localhost", .ext = "localhost.cnf" });
+    try issue(io, dir, .{ .name = "rsa", .subject = "/CN=localhost", .ext = "localhost.cnf", .rsa = true });
+    try issue(io, dir, .{ .name = "leaf", .subject = "/CN=attacker.example", .ext = "leaf.cnf" });
+    try issue(io, dir, .{ .name = "forged", .subject = "/CN=localhost", .ext = "localhost.cnf", .by = "leaf" });
 }
 
 /// A port nothing listens on now.
@@ -49,19 +94,31 @@ const Server = struct {
     child: std.process.Child,
     port: u16,
 
-    /// With `extra`, up to four more of s_server's options.
-    fn start(io: Io, dir: Io.Dir, extra: []const []const u8) !Server {
+    const Options = struct {
+        /// `NAME.pem`, with its key in `NAME.key`.
+        cert: []const u8 = "server",
+        /// A PEM file of the certificates sent after it.
+        chain: ?[]const u8 = null,
+        /// More of s_server's options.
+        extra: []const []const u8 = &.{},
+    };
+
+    fn start(io: Io, dir: Io.Dir, o: Options) !Server {
+        const gpa = testing.allocator;
         const port = try freePort(io);
         var port_text: [8]u8 = undefined;
-        const base = [_][]const u8{ "openssl", "s_server", "-accept", try std.fmt.bufPrint(&port_text, "{d}", .{port}), "-cert", "server.pem", "-key", "server.key", "-HTTP", "-quiet" };
-        var argv: [base.len + 4][]const u8 = undefined;
-        @memcpy(argv[0..base.len], &base);
-        @memcpy(argv[base.len..][0..extra.len], extra);
+        var pem: [32]u8 = undefined;
+        var key: [32]u8 = undefined;
+        var argv: std.ArrayList([]const u8) = .empty;
+        defer argv.deinit(gpa);
+        try argv.appendSlice(gpa, &.{ "openssl", "s_server", "-accept", try std.fmt.bufPrint(&port_text, "{d}", .{port}), "-cert", try fileName(&pem, o.cert, "pem"), "-key", try fileName(&key, o.cert, "key"), "-HTTP", "-quiet" });
+        if (o.chain) |chain| try argv.appendSlice(gpa, &.{ "-cert_chain", chain });
+        try argv.appendSlice(gpa, o.extra);
         var name: [32]u8 = undefined;
         const log = try dir.createFile(io, try logName(&name, port), .{});
         defer log.close(io);
         const child = try std.process.spawn(io, .{
-            .argv = argv[0 .. base.len + extra.len],
+            .argv = argv.items,
             .cwd = .{ .dir = dir },
             .stdin = .ignore,
             .stdout = .ignore,
@@ -94,6 +151,14 @@ const Server = struct {
     }
 };
 
+/// For a step a test needs to succeed: says what failed, and what s_server
+/// wrote, and returns the error.
+fn failed(err: anyerror, server: *const Server, io: Io, dir: Io.Dir) anyerror {
+    std.debug.print("{t}\n", .{err});
+    server.printLog(io, dir);
+    return err;
+}
+
 /// A transport that trusts the run's CA alone, not the system's roots.
 fn trustRunCa(ht: *HttpTransport, io: Io, dir: Io.Dir) !void {
     const now = Io.Clock.real.now(io);
@@ -114,22 +179,20 @@ fn getTrusted(io: Io, dir: Io.Dir, arena: std.mem.Allocator, url: []const u8) !r
             return res;
         } else |err| {
             // s_server takes a moment to listen.
-            if (err != error.ConnectionRefused or attempt >= 50) {
-                std.debug.print("GET {s}: {t}\n", .{ url, err });
-                return err;
-            }
+            if (err != error.ConnectionRefused or attempt >= 50) return err;
             try io.sleep(.fromMilliseconds(100), .awake);
         }
     }
 }
 
-/// std's own TLS handshake with the server on `port`, trusting the run's
-/// CA: the error `std.crypto.tls.Client.init` returns, which the transport
-/// reports only as `error.TlsFailure`. Waits for the server to come up.
-fn handshake(io: Io, dir: Io.Dir, port: u16) !void {
+/// std's own TLS handshake with the server on `port`, for localhost,
+/// trusting the run's CA, its clock at `now`: the error
+/// `std.crypto.tls.Client.init` returns, which the transport reports only
+/// as `error.TlsFailure`. Waits for the server to come up.
+fn handshake(io: Io, dir: Io.Dir, port: u16, now: Io.Timestamp) !void {
     var attempt: usize = 0;
     while (true) : (attempt += 1) {
-        handshakeOnce(io, dir, port) catch |err| {
+        handshakeOnce(io, dir, port, now) catch |err| {
             if (err != error.ConnectionRefused or attempt >= 50) return err;
             try io.sleep(.fromMilliseconds(100), .awake);
             continue;
@@ -138,12 +201,11 @@ fn handshake(io: Io, dir: Io.Dir, port: u16) !void {
     }
 }
 
-fn handshakeOnce(io: Io, dir: Io.Dir, port: u16) !void {
+fn handshakeOnce(io: Io, dir: Io.Dir, port: u16, now: Io.Timestamp) !void {
     const gpa = testing.allocator;
-    const now = Io.Clock.real.now(io);
     var bundle: std.crypto.Certificate.Bundle = .empty;
     defer bundle.deinit(gpa);
-    try bundle.addCertsFromFilePath(gpa, io, now, dir, "ca.pem");
+    try bundle.addCertsFromFilePath(gpa, io, Io.Clock.real.now(io), dir, "ca.pem");
     var lock: Io.RwLock = .init;
     const address: Io.net.IpAddress = .{ .ip4 = .loopback(port) };
     const stream = try address.connect(io, .{ .mode = .stream });
@@ -178,26 +240,25 @@ fn longHeadReply(n: usize) ![]u8 {
     return reply.toOwnedSlice(testing.allocator);
 }
 
-test "security: CWE-295 https takes a certificate only from a root it trusts, and only for its host" {
+test "security: CWE-295 https takes a certificate only from a root it trusts, for its host, and in its time" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try makeCertificates(io, tmp.dir);
     try tmp.dir.writeFile(io, .{ .sub_path = "ok.txt", .data = ok_reply });
-    var server: Server = try .start(io, tmp.dir, &.{});
+    var server: Server = try .start(io, tmp.dir, .{});
     defer server.stop(io);
-    errdefer server.printLog(io, tmp.dir);
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var buf: [128]u8 = undefined;
 
     // The control: the CA that signed it, for the host it names.
-    const res = try getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/ok.txt"));
+    const res = getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/ok.txt")) catch |err| return failed(err, &server, io, tmp.dir);
     try testing.expectEqual(200, res.status);
     try testing.expectEqualStrings("ok", res.body);
 
-    // The system's roots alone: no root signed it, as for a self-signed or
-    // forged certificate.
+    // The system's roots alone: no root signed it, as for a self-signed
+    // certificate or one a stranger's CA signed.
     {
         var ht: HttpTransport = .init(testing.allocator, io, "rest-core-tls-test");
         defer ht.deinit();
@@ -210,6 +271,13 @@ test "security: CWE-295 https takes a certificate only from a root it trusts, an
         try trustRunCa(&ht, io, tmp.dir);
         try testing.expectError(error.TlsFailure, ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "127.0.0.1", "/ok.txt"), .timeout_ms = 10_000 }, arena.allocator()));
     }
+    // Three days on, the certificate has expired and its CA has not. The
+    // transport resets a TLS clock that runs ahead of the real one, so this
+    // drives std's handshake, the check the transport relies on, with the
+    // clock moved.
+    const now = Io.Clock.real.now(io);
+    handshake(io, tmp.dir, server.port, now) catch |err| return failed(err, &server, io, tmp.dir);
+    try testing.expectError(error.CertificateExpired, handshake(io, tmp.dir, server.port, now.addDuration(.fromSeconds(3 * 24 * 60 * 60))));
 }
 
 test "security: CWE-617 a head under std's 8 KiB is read, and one past a TLS record refused, never a crash" {
@@ -226,46 +294,92 @@ test "security: CWE-617 a head under std's 8 KiB is read, and one past a TLS rec
     defer testing.allocator.free(long);
     try tmp.dir.writeFile(io, .{ .sub_path = "near.txt", .data = near });
     try tmp.dir.writeFile(io, .{ .sub_path = "long.txt", .data = long });
-    var server: Server = try .start(io, tmp.dir, &.{});
+    var server: Server = try .start(io, tmp.dir, .{});
     defer server.stop(io);
-    errdefer server.printLog(io, tmp.dir);
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var buf: [128]u8 = undefined;
 
     // Under the limit: read whole.
-    const res = try getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/near.txt"));
+    const res = getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/near.txt")) catch |err| return failed(err, &server, io, tmp.dir);
     try testing.expectEqual(200, res.status);
     try testing.expectEqualStrings("ok", res.body);
     // Past a record and the limit: refused, cleanly.
     try testing.expectError(error.HttpProtocolError, getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/long.txt")));
 }
 
-// For now a probe: with s_server's records cut to 512 bytes, the head
-// test's first request failed at once (CI run 42292877349), and std's
-// handshake looks unable to join a message split across records.
-test "std's TLS handshake, with the server's records whole and cut to 512 bytes" {
+test "security: CWE-296 std takes a certificate signed by one that is not a CA (Codeberg ziglang/zig#35877)" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try makeCertificates(io, tmp.dir);
-    const cases = [_]struct { name: []const u8, extra: []const []const u8 }{
-        .{ .name = "TLS 1.3, whole records", .extra = &.{} },
-        .{ .name = "TLS 1.3, 512-byte records", .extra = &.{ "-max_send_frag", "512" } },
-        .{ .name = "TLS 1.2, whole records", .extra = &.{"-tls1_2"} },
-        .{ .name = "TLS 1.2, 512-byte records", .extra = &.{ "-tls1_2", "-max_send_frag", "512" } },
-    };
-    var failed = false;
-    for (cases) |c| {
-        var server: Server = try .start(io, tmp.dir, c.extra);
+    try tmp.dir.writeFile(io, .{ .sub_path = "ok.txt", .data = ok_reply });
+    // forged.pem for localhost, signed by leaf.pem, which the CA signed for
+    // attacker.example with CA:FALSE: a client must refuse the chain (RFC
+    // 5280 4.2.1.9). Zig 0.17.1's takes it, so a man in the middle with any
+    // certificate a trusted root signed is taken for any host. This test
+    // holds std to the bug. Once it fails, std refuses the chain: expect
+    // error.TlsFailure here, and set CONN-10 covered (t31).
+    var server: Server = try .start(io, tmp.dir, .{ .cert = "forged", .chain = "leaf.pem" });
+    defer server.stop(io);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    const res = getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/ok.txt")) catch |err| return failed(err, &server, io, tmp.dir);
+    try testing.expectEqual(200, res.status);
+}
+
+test "std's TLS client cannot reach a server that splits its handshake into small records, or a TLS 1.2 one with an ECDSA key" {
+    // Each holds std to what it cannot do, and fails once std can.
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try makeCertificates(io, tmp.dir);
+    try tmp.dir.writeFile(io, .{ .sub_path = "ok.txt", .data = ok_reply });
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    const now = Io.Clock.real.now(io);
+
+    // The controls: TLS 1.3, its records whole, and TLS 1.2 with an RSA key.
+    {
+        var server: Server = try .start(io, tmp.dir, .{});
         defer server.stop(io);
-        if (handshake(io, tmp.dir, server.port)) |_| {
-            std.debug.print("{s}: ok\n", .{c.name});
-        } else |err| {
-            std.debug.print("{s}: {t}\n", .{ c.name, err });
-            server.printLog(io, tmp.dir);
-            failed = true;
+        handshake(io, tmp.dir, server.port, now) catch |err| return failed(err, &server, io, tmp.dir);
+    }
+    {
+        var server: Server = try .start(io, tmp.dir, .{ .cert = "rsa", .extra = &.{"-tls1_2"} });
+        defer server.stop(io);
+        handshake(io, tmp.dir, server.port, now) catch |err| return failed(err, &server, io, tmp.dir);
+    }
+    // TLS 1.3 in records of 512 bytes, which RFC 8446 5.1 allows: once the
+    // Certificate message is read, std reads the next record into its other
+    // buffer, away from the start of the message that record ends, and takes
+    // bytes never written there for the rest of it.
+    {
+        var server: Server = try .start(io, tmp.dir, .{ .extra = &.{ "-max_send_frag", "512" } });
+        defer server.stop(io);
+        try testing.expectError(error.TlsUnexpectedMessage, handshake(io, tmp.dir, server.port, now));
+    }
+    // TLS 1.2 in records of 512 bytes: std reads a cleartext handshake
+    // record by record, so a message split between two is never joined.
+    // Through the transport, whose time limit ends a handshake left waiting.
+    {
+        var server: Server = try .start(io, tmp.dir, .{ .cert = "rsa", .extra = &.{ "-tls1_2", "-max_send_frag", "512" } });
+        defer server.stop(io);
+        if (getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/ok.txt"))) |_| {
+            std.debug.print("TLS 1.2 in records of 512 bytes was taken\n", .{});
+            return error.TestUnexpectedResult;
+        } else |err| switch (err) {
+            error.TlsFailure, error.TimedOut => {},
+            else => return failed(err, &server, io, tmp.dir),
         }
     }
-    if (failed) return error.TestUnexpectedResult;
+    // TLS 1.2 with an ECDSA key: std offers TLS 1.2's ECDHE_RSA suites
+    // alone, so the server has none it can use, and says so.
+    {
+        var server: Server = try .start(io, tmp.dir, .{ .extra = &.{"-tls1_2"} });
+        defer server.stop(io);
+        try testing.expectError(error.TlsAlert, handshake(io, tmp.dir, server.port, now));
+    }
 }

@@ -82,3 +82,28 @@ last group was found while porting it. Each was checked against Zig
   ziglang/zig#37023, fixed for 0.18 only). `rsa` blinds its exponent:
   each signature raises to `d + k * phi(n)` for a fresh random `k`, so the
   branches see another exponent every time.
+- `std.crypto.tls.Client` takes a certificate signed by one that is not a
+  CA (Codeberg ziglang/zig#35877 and #37353, open; the fix, PR #37354,
+  not merged; reproduced on 0.17.1). It checks each certificate against
+  the next by signature and issuer alone, never basicConstraints' cA flag
+  or path length, nor keyUsage. So anyone holding a certificate a trusted
+  root signed, for a domain of their own, can sign one for any host, and a
+  man in the middle that presents the two is trusted, and is sent the
+  bearer token. `std.http.Client` builds the TLS client and verifies the
+  chain itself, out of the transport's reach. Not worked around:
+  test/security/CATALOG.md, CONN-10, and card t31.
+- `std.crypto.tls.Client` cannot join a handshake message split across
+  records, which RFC 8446 5.1 allows a server to send. Under TLS 1.3 it
+  reads the record after the Certificate message into its other buffer,
+  away from the start of the message that record ends, and reads bytes
+  never written there (`error.TlsUnexpectedMessage`); under TLS 1.2 it
+  reads each cleartext record alone. A server whose records hold whole
+  handshake messages, as one of 16 KiB holds a whole flight, is reached;
+  one that cuts its records small (OpenSSL's `max_send_fragment`) is not.
+  No issue found upstream. Not worked around; test/tls/tls_test.zig holds
+  std to it.
+- `std.crypto.tls.Client` offers TLS 1.2's ECDHE_RSA suites alone, so a
+  server that speaks TLS 1.2 and no later, with an ECDSA key, refuses the
+  handshake (`error.TlsAlert`, handshake_failure). Google's and Azure's
+  endpoints speak TLS 1.3. Not worked around; test/tls/tls_test.zig holds
+  std to it.

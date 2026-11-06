@@ -38,3 +38,16 @@ request forgery of its own.
 [test/security/CATALOG.md](test/security/CATALOG.md) lists every known
 attack on an HTTP and REST client, with the test that proves the defence,
 the work that will add it, or the reason it does not apply.
+
+## Known gaps
+
+**TLS takes a certificate signed by one that is not a CA.** Zig 0.17.1's
+TLS client, which `std.http.Client` and so rest-core's transport use,
+checks each certificate in a server's chain by its signature and issuer
+alone, not whether its issuer may issue certificates (Codeberg
+ziglang/zig#35877 and #37353; the fix, PR #37354, is not merged). Anyone
+holding a certificate a trusted root signed, for a domain of their own,
+can sign one for any host, and a man in the middle that presents it is
+trusted with the bearer token. Every Zig 0.17.1 HTTPS client shares it.
+The catalog's CONN-10 tracks it, with a test that fails once std fixes
+it.
