@@ -105,6 +105,10 @@ Until 1.0, minor versions may break the API; each entry says how.
   prove it, checked against the tests by `zig build test`. SECURITY.md
   says how to report a vulnerability.
 - `zig build test-tls`, run in CI: TLS against `openssl s_server` with a
-  CA made for the run. A certificate no trusted root signed, or one for
-  another name, is refused; a head under std's 8 KiB is read, and one
-  past a TLS record is refused, never a crash.
+  CA made for the run. A certificate no trusted root signed, one for
+  another name, and one expired are refused; a head under std's 8 KiB is
+  read, and one past a TLS record is refused, never a crash. It holds std
+  to three faults of its TLS client, each test failing once std fixes
+  it: a certificate signed by one that is not a CA is taken (SECURITY.md,
+  Known gaps), and neither a handshake cut into small records nor TLS
+  1.2 with an ECDSA key gets through.
