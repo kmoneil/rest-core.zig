@@ -136,6 +136,26 @@ pub fn build(b: *std.Build) void {
     fix_docs.addPassthruArgs();
     b.step("doc-examples", "Check the examples and links in README.md and docs/ (-- --fix: rewrite the examples from their files)").dependOn(&fix_docs.step);
 
+    // TLS against `openssl s_server` (test/tls): certificate refusals and a
+    // head line longer than a TLS record. It listens on a port and needs
+    // openssl, so CI runs it as a job of its own; `test` only compiles it,
+    // so it cannot rot.
+    const tls_tests = b.addTest(.{
+        .name = "tls",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test/tls/tls_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "rest_core", .module = mod }},
+        }),
+        .filters = test_filters,
+        .test_runner = test_runner,
+    });
+    test_step.dependOn(&tls_tests.step);
+    const run_tls = b.addRunArtifact(tls_tests);
+    run_tls.has_side_effects = true;
+    b.step("test-tls", "Run the TLS tests against openssl s_server (needs openssl, and a port to listen on)").dependOn(&run_tls.step);
+
     const security_step = b.step("security", "Run the security suite and check its catalog (test/security)");
     security_step.dependOn(&b.addRunArtifact(security_tests).step);
     security_step.dependOn(&check_catalog.step);
