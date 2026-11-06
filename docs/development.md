@@ -61,6 +61,8 @@ fix made in either can be carried to the other.
 | src/timestamp.zig | src/core/timestamp.zig | eae944c |
 | src/http_date.zig | src/core/retry_after.zig (its HTTP-date parser and tests) | eae944c |
 | src/transport.zig | src/core/transport.zig | eae944c |
+| src/TokenProvider.zig | src/core/TokenProvider.zig | eae944c |
+| src/StaticToken.zig | src/core/StaticToken.zig | eae944c |
 
 Changed on the way: base64's and logging's headers no longer assume
 Google; query.zig gained `isDotSegment`, `hasDotSegment` and the checked
@@ -77,6 +79,12 @@ flate.zig was a re-export); a time limit the `Io` cannot run is
 send other than as written, a header the transport owns, and a response
 framed two ways (docs/zig-std-workarounds.md). Its tests' CRC-32C became
 std's CRC-32, and testing.zig gained `ScriptedServer`, whose body hash
-changed the same way.
+changed the same way. TokenProvider.zig drops `quotaProject` (gcp.zig's
+`x-goog-user-project` goes through the request loop's hook instead) and
+renames two errors, `RefreshTokenInvalid` to `ReauthenticationRequired`
+and `MetadataUnavailable` to `CredentialSourceUnavailable`; its
+`isValidToken` is the transport's `isValidBearerToken`, which the
+transport now holds every bearer token to. testing.zig gained
+`FakeTokenProvider`, without `quota_project`.
 
 tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.

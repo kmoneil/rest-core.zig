@@ -13,6 +13,10 @@
 /// `std.http.Client` one, with a per-request time limit.
 pub const transport = @import("transport.zig");
 
+/// The seam through which a cloud's modules get bearer tokens.
+pub const TokenProvider = @import("TokenProvider.zig");
+pub const StaticToken = @import("StaticToken.zig");
+
 /// Base64, as JSON APIs carry bytes fields.
 pub const base64 = @import("base64.zig");
 
@@ -46,6 +50,8 @@ pub const testing = @import("testing.zig");
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("CountingWriter.zig");
+    _ = @import("StaticToken.zig");
+    _ = @import("TokenProvider.zig");
     _ = @import("WipingAllocator.zig");
     _ = @import("base64.zig");
     _ = @import("change.zig");

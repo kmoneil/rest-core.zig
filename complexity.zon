@@ -20,6 +20,7 @@
         "src/http_date.zig",
         "src/query.zig",
         "src/timestamp.zig",
+        "src/TokenProvider.zig",
         "src/transport.zig",
     },
     // What only builds or tests: the build, the tools (tools/test_runner.zig

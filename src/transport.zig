@@ -621,6 +621,7 @@ pub const HttpTransport = struct {
     /// proxy before it picks one, and two lengths is request smuggling
     /// (CWE-444).
     fn checkRequestHeaders(req: StreamRequest) Error!void {
+        if (req.bearer) |token| if (!isValidBearerToken(token)) return error.InvalidRequestHeader;
         for (req.headers) |h| if (!isAllowedHeader(h, req)) return error.InvalidRequestHeader;
         if (req.content_type) |ct| if (!isValidHeaderValue(ct)) return error.InvalidRequestHeader;
     }
@@ -682,6 +683,16 @@ const owned_headers = [_][]const u8{ "host", "content-length", "transfer-encodin
 pub fn isOwnedHeader(name: []const u8) bool {
     for (owned_headers) |owned| if (std.ascii.eqlIgnoreCase(name, owned)) return true;
     return false;
+}
+
+/// Whether `token` can follow `Bearer ` in Authorization: non-empty, every
+/// byte visible ASCII. std.http writes the header as it is given, so a
+/// token with CR and LF in it, from a hostile or broken token endpoint,
+/// would add a header of its own to the request.
+pub fn isValidBearerToken(token: []const u8) bool {
+    if (token.len == 0) return false;
+    for (token) |c| if (c <= ' ' or c >= 0x7f) return false;
+    return true;
 }
 
 fn isDigits(text: []const u8) bool {
@@ -1941,6 +1952,18 @@ test "HttpTransport refuses, before connecting, a header the transport owns" {
     // Content-Type beside the body's.
     try testing.expectError(error.InvalidRequestHeader, t.send(.{ .method = .GET, .url = url, .bearer = "tok", .headers = &.{.{ .name = "Authorization", .value = "Bearer other" }} }, arena.allocator()));
     try testing.expectError(error.InvalidRequestHeader, t.send(.{ .method = .POST, .url = url, .body = "{}", .headers = &.{.{ .name = "content-type", .value = "text/plain" }} }, arena.allocator()));
+}
+
+test "HttpTransport refuses, before connecting, a bearer token that would end the line" {
+    var ht: HttpTransport = .init(testing.allocator, testing.io, "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    // std.http wrote `authorization: Bearer tok`, then `X-Injected: y`, as
+    // a header of its own (probed on Zig 0.17.1).
+    for ([_][]const u8{ "tok\r\nX-Injected: y", "tok\n", "", "a b", "t\xc3\xa9" }) |token| {
+        try testing.expectError(error.InvalidRequestHeader, ht.transport().send(.{ .method = .GET, .url = "http://127.0.0.1:9/p", .bearer = token }, arena.allocator()));
+    }
 }
 
 test "HttpTransport sends an Authorization of the caller's own when there is no bearer token" {

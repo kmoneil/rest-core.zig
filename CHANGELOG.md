@@ -38,6 +38,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   - a response with Transfer-Encoding beside Content-Length, or a
     Content-Length that is not digits, is `error.HttpProtocolError` and
     its connection is closed.
+- `TokenProvider`, `StaticToken` and `testing.FakeTokenProvider`, from
+  gcp.zig, without `quotaProject`. Breaking against gcp.zig:
+  `RefreshTokenInvalid` is `ReauthenticationRequired`, and
+  `MetadataUnavailable` is `CredentialSourceUnavailable`. The transport
+  refuses a bearer token that is not non-empty visible ASCII
+  (`error.InvalidRequestHeader`), since std would write CR and LF in one
+  into the request.
 - `testing.ScriptedServer`: a loopback server that answers with scripted
   bytes and records what it was sent.
 - A security catalog, test/security/CATALOG.md: every known attack on an

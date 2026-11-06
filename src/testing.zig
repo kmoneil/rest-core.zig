@@ -9,6 +9,91 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
 
+const TokenProvider = @import("TokenProvider.zig");
+
+/// A `TokenProvider` that returns one token, or fails with one error, and
+/// counts how it is used.
+pub const FakeTokenProvider = struct {
+    /// Returned, copied into the caller's arena, while `fail` is null.
+    token: []const u8 = "ya29.fake-token",
+    /// When set, `getToken` fails with it.
+    fail: ?TokenProvider.Error = null,
+    /// When set, `invalidate` makes this the token from then on, so a test
+    /// can tell a freshly fetched token from the cached one.
+    next_token: ?[]const u8 = null,
+    /// `getToken` calls so far, failed ones included.
+    calls: usize = 0,
+    invalidations: usize = 0,
+    /// How many scopes the latest `getToken` call asked for.
+    scope_count: usize = 0,
+    first_scope_buffer: [128]u8 = undefined,
+    first_scope_len: usize = 0,
+
+    pub fn provider(self: *FakeTokenProvider) TokenProvider {
+        return .{ .ptr = self, .vtable = &.{
+            .getToken = getToken,
+            .invalidate = invalidate,
+        } };
+    }
+
+    /// The first scope of the latest `getToken` call, truncated to 128 bytes.
+    pub fn firstScope(self: *const FakeTokenProvider) []const u8 {
+        return self.first_scope_buffer[0..self.first_scope_len];
+    }
+
+    fn fromPtr(ptr: *anyopaque) *FakeTokenProvider {
+        return @ptrCast(@alignCast(ptr));
+    }
+
+    fn getToken(ptr: *anyopaque, io: std.Io, arena: Allocator, scopes: []const []const u8) TokenProvider.Error![]const u8 {
+        _ = io;
+        const self = fromPtr(ptr);
+        self.calls += 1;
+        self.scope_count = scopes.len;
+        const first = if (scopes.len > 0) scopes[0] else "";
+        self.first_scope_len = @min(first.len, self.first_scope_buffer.len);
+        @memcpy(self.first_scope_buffer[0..self.first_scope_len], first[0..self.first_scope_len]);
+        if (self.fail) |err| return err;
+        return arena.dupe(u8, self.token);
+    }
+
+    fn invalidate(ptr: *anyopaque) void {
+        const self = fromPtr(ptr);
+        self.invalidations += 1;
+        if (self.next_token) |token| {
+            self.token = token;
+            self.next_token = null;
+        }
+    }
+};
+
+test "FakeTokenProvider returns its token or its error, and counts" {
+    var fake: FakeTokenProvider = .{};
+    const p = fake.provider();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+
+    const token = try p.getToken(std.testing.io, arena.allocator(), &.{ "scope-a", "scope-b" });
+    try std.testing.expectEqualStrings("ya29.fake-token", token);
+    try std.testing.expect(token.ptr != fake.token.ptr);
+    try std.testing.expectEqual(2, fake.scope_count);
+    try std.testing.expectEqualStrings("scope-a", fake.firstScope());
+
+    fake.fail = error.ReauthenticationRequired;
+    try std.testing.expectError(error.ReauthenticationRequired, p.getToken(std.testing.io, arena.allocator(), &.{}));
+    try std.testing.expectEqual(0, fake.scope_count);
+    try std.testing.expectEqualStrings("", fake.firstScope());
+
+    p.invalidate();
+    try std.testing.expectEqual(2, fake.calls);
+    try std.testing.expectEqual(1, fake.invalidations);
+
+    // A scope longer than the buffer is truncated, not overflowed.
+    const long: [200]u8 = @splat('s');
+    _ = p.getToken(std.testing.io, arena.allocator(), &.{&long}) catch {};
+    try std.testing.expectEqual(128, fake.firstScope().len);
+}
+
 test "FakeClock: cancel protection is kept, and a blocked sleep is not canceled" {
     var clock: FakeClock = .{ .cancel_sleep = true };
     const io = clock.io();

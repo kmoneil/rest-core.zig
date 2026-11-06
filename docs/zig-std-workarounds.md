@@ -49,6 +49,10 @@ last group was found while porting it. Each was checked against Zig
   class of Python urllib's CVE-2019-9740). It also drops userinfo silently
   and sends a percent-encoded host in Host as written. The transport
   refuses such URLs before connecting (`checkUrl`).
+- `std.http.Client` writes an Authorization value as it is given, so a
+  bearer token with CR and LF in it, from a hostile or broken token
+  endpoint, adds a header to the request. The transport holds every token
+  to non-empty visible ASCII (`isValidBearerToken`).
 - `std.http.Client` sends a caller's extra Host, Content-Length,
   Transfer-Encoding or Connection beside its own; two lengths is request
   smuggling. The transport refuses the headers it owns (`isOwnedHeader`).
