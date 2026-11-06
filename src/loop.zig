@@ -465,7 +465,7 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         /// cloud reads it, its body: the larger. Kept in `Diagnostics`
         /// whether or not the call is retried.
         fn serverDelay(self: Self, scratch: Allocator, res: Response) Allocator.Error!?u32 {
-            const from_headers = retry_after.serverDelayMs(res.headers, std.Io.Clock.real.now(self.io));
+            const from_headers = retry_after.serverDelayMs(transport.Header, res.headers, std.Io.Clock.real.now(self.io));
             const ms = retry_after.larger(from_headers, try Cloud.bodyDelayMs(scratch, hookBody(res.body)));
             if (self.diagnostics) |d| d.retry_after_ms = ms;
             if (self.server_delay_out) |out| out.* = ms;

@@ -1,4 +1,4 @@
-// From gcp.zig src/core/retry_after.zig at eae944c: its header readers and their tests. google.rpc.RetryInfo stays Google's, read by the cloud's hook; the HTTP-date parser moved to http_date.zig; x-ms-retry-after-ms is new.
+// From gcp.zig src/core/retry_after.zig at eae944c: its header readers and their tests. google.rpc.RetryInfo stays Google's, read by the cloud's hook; the HTTP-date parser moved to http_date.zig; x-ms-retry-after-ms is new; serverDelayMs takes any header type.
 //! A server's retry delay: how long a refused response's headers asked its
 //! client to wait before trying again. Three headers are read, and the
 //! largest valid delay kept, since each means "at least this long":
@@ -23,29 +23,38 @@
 //!
 //! `Asked` writes a delay in any of the headers, for the fakes, whose
 //! scripted refusals stand in for a server that asks.
+//!
+//! None of it needs the transport or the request loop, so a client with an
+//! HTTP stack of its own can read its responses' delays: `serverDelayMs`
+//! takes its header type, and `retryAfterMs` and `millisecondsMs` take a
+//! value alone.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const http_date = @import("http_date.zig");
-const transport = @import("transport.zig");
+
+/// The transport's header (`transport.Header` is std's), as `Asked` writes
+/// them.
+const Header = std.http.Header;
 
 const max_ms = std.math.maxInt(u32);
 
 /// The delay a refused response's headers asked for, in milliseconds, or
-/// null when they asked for none. `received_at` is the wall clock when it
-/// arrived.
-pub fn serverDelayMs(headers: []const transport.Header, received_at: std.Io.Timestamp) ?u32 {
+/// null when they asked for none. `H` is any struct with `name` and `value`
+/// byte slices: `std.http.Header`, which `transport.Header` is, or a
+/// client's own. `received_at` is the wall clock when it arrived.
+pub fn serverDelayMs(comptime H: type, headers: []const H, received_at: std.Io.Timestamp) ?u32 {
     var best: ?u32 = null;
-    const date = header(headers, "date");
-    for (headers) |h| best = larger(best, headerDelayMs(h, date, received_at));
+    const date = header(H, headers, "date");
+    for (headers) |h| best = larger(best, headerDelayMs(h.name, h.value, date, received_at));
     return best;
 }
 
 /// The delay one header asks for, if it is one of the three.
-fn headerDelayMs(h: transport.Header, date: ?[]const u8, received_at: std.Io.Timestamp) ?u32 {
-    if (std.ascii.eqlIgnoreCase(h.name, "retry-after")) return retryAfterMs(h.value, date, received_at);
-    if (std.ascii.eqlIgnoreCase(h.name, "retry-after-ms")) return millisecondsMs(h.value);
-    if (std.ascii.eqlIgnoreCase(h.name, "x-ms-retry-after-ms")) return millisecondsMs(h.value);
+fn headerDelayMs(name: []const u8, value: []const u8, date: ?[]const u8, received_at: std.Io.Timestamp) ?u32 {
+    if (std.ascii.eqlIgnoreCase(name, "retry-after")) return retryAfterMs(value, date, received_at);
+    if (std.ascii.eqlIgnoreCase(name, "retry-after-ms")) return millisecondsMs(value);
+    if (std.ascii.eqlIgnoreCase(name, "x-ms-retry-after-ms")) return millisecondsMs(value);
     return null;
 }
 
@@ -58,7 +67,7 @@ pub fn larger(a: ?u32, b: ?u32) ?u32 {
     return @max(x, y);
 }
 
-fn header(headers: []const transport.Header, name: []const u8) ?[]const u8 {
+fn header(comptime H: type, headers: []const H, name: []const u8) ?[]const u8 {
     for (headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
     return null;
 }
@@ -124,8 +133,8 @@ pub const Asked = struct {
     };
 
     /// The headers that carry it, in `arena`.
-    pub fn headers(a: Asked, arena: Allocator) Allocator.Error![]const transport.Header {
-        var list: std.ArrayList(transport.Header) = .empty;
+    pub fn headers(a: Asked, arena: Allocator) Allocator.Error![]const Header {
+        var list: std.ArrayList(Header) = .empty;
         if (a.form == .retry_after or a.form == .all) {
             try list.append(arena, .{ .name = "Retry-After", .value = try arena.print("{d}", .{a.seconds()}) });
         }
@@ -199,26 +208,37 @@ test "serverDelayMs: the largest of the headers, as Google's front end and Azure
     const now = at(1_792_255_951);
     // jenslys/opencode-gemini-auth#48: one 429 from ESF with both headers
     // (and a RetryInfo in its body, which is the cloud's hook's to read).
-    try testing.expectEqual(1_000, serverDelayMs(&.{
+    try testing.expectEqual(1_000, serverDelayMs(Header, &.{
         .{ .name = "date", .value = "Sat, 07 Feb 2026 15:08:40 GMT" },
         .{ .name = "retry-after", .value = "1" },
         .{ .name = "retry-after-ms", .value = "831" },
         .{ .name = "server", .value = "ESF" },
     }, now).?);
-    try testing.expectEqual(831, serverDelayMs(&.{.{ .name = "Retry-After-Ms", .value = "831" }}, now).?);
+    try testing.expectEqual(831, serverDelayMs(Header, &.{.{ .name = "Retry-After-Ms", .value = "831" }}, now).?);
     // Azure's own header, alone and beside Retry-After.
-    try testing.expectEqual(2_500, serverDelayMs(&.{.{ .name = "x-ms-retry-after-ms", .value = "2500" }}, now).?);
-    try testing.expectEqual(3_000, serverDelayMs(&.{ .{ .name = "Retry-After", .value = "3" }, .{ .name = "x-ms-retry-after-ms", .value = "2500" } }, now).?);
+    try testing.expectEqual(2_500, serverDelayMs(Header, &.{.{ .name = "x-ms-retry-after-ms", .value = "2500" }}, now).?);
+    try testing.expectEqual(3_000, serverDelayMs(Header, &.{ .{ .name = "Retry-After", .value = "3" }, .{ .name = "x-ms-retry-after-ms", .value = "2500" } }, now).?);
     // Two Retry-After headers: the larger.
-    try testing.expectEqual(7_000, serverDelayMs(&.{ .{ .name = "Retry-After", .value = "7" }, .{ .name = "Retry-After", .value = "2" } }, now).?);
+    try testing.expectEqual(7_000, serverDelayMs(Header, &.{ .{ .name = "Retry-After", .value = "7" }, .{ .name = "Retry-After", .value = "2" } }, now).?);
     // An invalid one beside a valid one is ignored.
-    try testing.expectEqual(2_000, serverDelayMs(&.{ .{ .name = "Retry-After", .value = "soon" }, .{ .name = "Retry-After", .value = "2" } }, now).?);
+    try testing.expectEqual(2_000, serverDelayMs(Header, &.{ .{ .name = "Retry-After", .value = "soon" }, .{ .name = "Retry-After", .value = "2" } }, now).?);
+}
+
+test "serverDelayMs: a client's own header type, with fields of its own, reads the same" {
+    const Own = struct { flags: u8 = 0, value: []const u8, name: []const u8 };
+    const now = at(1_792_255_951);
+    try testing.expectEqual(4_000, serverDelayMs(Own, &.{
+        .{ .name = "Date", .value = "Wed, 18 Oct 2026 10:12:31 GMT" },
+        .{ .name = "x-ms-retry-after-ms", .value = "4000", .flags = 1 },
+        .{ .name = "Retry-After", .value = "2" },
+    }, now).?);
+    try testing.expectEqual(null, serverDelayMs(Own, &.{}, now));
 }
 
 test "serverDelayMs: what Google's production sent on 2026-10-16 and 17 asks for nothing" {
     const now = at(1_792_255_951);
     // Logging's quota 429, from ESF, with every header it carried.
-    try testing.expectEqual(null, serverDelayMs(&.{
+    try testing.expectEqual(null, serverDelayMs(Header, &.{
         .{ .name = "Vary", .value = "X-Origin" },
         .{ .name = "Content-Type", .value = "application/json; charset=UTF-8" },
         .{ .name = "Date", .value = "Sat, 17 Oct 2026 16:53:10 GMT" },
@@ -226,7 +246,7 @@ test "serverDelayMs: what Google's production sent on 2026-10-16 and 17 asks for
         .{ .name = "Server-Timing", .value = "gfet4t7; dur=19" },
     }, now));
     // Cloud Storage's XML 429.
-    try testing.expectEqual(null, serverDelayMs(&.{
+    try testing.expectEqual(null, serverDelayMs(Header, &.{
         .{ .name = "Content-Type", .value = "application/xml; charset=UTF-8" },
         .{ .name = "Date", .value = "Sat, 17 Oct 2026 16:52:31 GMT" },
         .{ .name = "Server", .value = "UploadServer" },
@@ -260,12 +280,12 @@ test "Asked: each form, written as servers write it, and read back" {
     const azure: Asked = .{ .ms = 1_500, .form = .x_ms_retry_after_ms };
     try testing.expectEqualStrings("x-ms-retry-after-ms", (try azure.headers(a))[0].name);
     try testing.expectEqual(1_500, azure.readMs());
-    try testing.expectEqual(1_500, serverDelayMs(try azure.headers(a), at(0)).?);
+    try testing.expectEqual(1_500, serverDelayMs(Header, try azure.headers(a), at(0)).?);
 
     const all: Asked = .{ .ms = 1_500 };
     try testing.expectEqual(2, (try all.headers(a)).len);
     try testing.expectEqual(2_000, all.readMs());
-    try testing.expectEqual(2_000, serverDelayMs(try all.headers(a), at(0)).?);
+    try testing.expectEqual(2_000, serverDelayMs(Header, try all.headers(a), at(0)).?);
     // The longest delay there is: the header's seconds saturate.
     try testing.expectEqual(max_ms, (Asked{ .ms = max_ms }).readMs());
     try testing.expectEqual(0, (Asked{ .ms = 0 }).readMs());
@@ -290,7 +310,7 @@ fn askedProperty(_: void, input: []const u8) !void {
     var g: test_util.ByteGen = .init(input);
     // Whatever is asked, in whatever header, is read back as `readMs`.
     const asked: Asked = .{ .ms = g.int(u32), .form = g.pick(Asked.Form, &.{ .retry_after, .retry_after_ms, .x_ms_retry_after_ms, .all }) };
-    try testing.expectEqual(asked.readMs(), serverDelayMs(try asked.headers(a), at(1_792_255_951)).?);
+    try testing.expectEqual(asked.readMs(), serverDelayMs(Header, try asked.headers(a), at(1_792_255_951)).?);
 }
 
 test "fuzz Asked: any delay in any form reads back as readMs says" {
@@ -301,16 +321,16 @@ fn delayProperty(_: void, input: []const u8) !void {
     var g: test_util.ByteGen = .init(input);
     // Arbitrary headers: never a crash, and the answer is the largest each
     // header gives alone.
-    var headers: [4]transport.Header = undefined;
+    var headers: [4]Header = undefined;
     const n = g.intRange(usize, 0, headers.len);
     for (headers[0..n]) |*h| h.* = .{
         .name = g.pick([]const u8, &.{ "Retry-After", "retry-after-ms", "x-ms-retry-after-ms", "Date", "X-Other" }),
         .value = g.slice(40),
     };
     const now = at(1_792_255_951);
-    const got = serverDelayMs(headers[0..n], now);
+    const got = serverDelayMs(Header, headers[0..n], now);
     var want: ?u32 = null;
-    const date = header(headers[0..n], "date");
+    const date = header(Header, headers[0..n], "date");
     for (headers[0..n]) |h| {
         const one = if (std.mem.eql(u8, h.name, "Retry-After"))
             retryAfterMs(h.value, date, now)
