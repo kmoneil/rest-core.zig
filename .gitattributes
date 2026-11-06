@@ -1,0 +1,5 @@
+# Every text file keeps LF on every platform. zig fmt --check, and the
+# checks that compare a document with a file byte for byte (the README's
+# examples, the security catalog), read the bytes as committed; a Windows
+# runner would otherwise check text out with CRLF.
+* text=auto eol=lf
