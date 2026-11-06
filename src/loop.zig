@@ -211,20 +211,22 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             var scratch: std.heap.ArenaAllocator = .init(if (call.wipe) wiping.allocator() else self.gpa);
             defer scratch.deinit();
             const url = try self.callUrl(scratch.allocator(), call.path);
-            const log_path = logPath(call.path);
-            var max_attempts: u32 = if (call.retry) self.retry.max_attempts else 1;
             const headers = try self.allHeaders(scratch.allocator(), call.headers);
-            const retryable = call.retryable orelse Cloud.retryable;
-
-            var reauthenticated = false;
-            const first_started = std.Io.Clock.awake.now(self.io);
-            var attempt: u32 = 1;
-            while (true) : (attempt += 1) {
-                // Each attempt starts over: a reset arena no longer holds
-                // the previous attempt's body.
-                if (call.error_body_out) |out| out.* = null;
-                if (self.server_delay_out) |out| out.* = null;
-                const bearer = try self.bearerToken(scratch.allocator());
+            var attempts: Attempts = .{
+                .method = call.method,
+                .log_path = logPath(call.path),
+                .max = if (call.retry) self.retry.max_attempts else 1,
+                .retryable = call.retryable orelse Cloud.retryable,
+                .window_ms = call.retry_window_ms,
+                .first_started = std.Io.Clock.awake.now(self.io),
+                .wipe = call.wipe,
+                .error_body_out = call.error_body_out,
+            };
+            // Set again by each failed response; the reset before the next
+            // attempt clears it with the body it points at.
+            if (call.error_body_out) |out| out.* = null;
+            while (true) : (attempts.number += 1) {
+                const bearer = try self.beginAttempt(scratch.allocator());
                 const started = std.Io.Clock.awake.now(self.io);
                 const outcome = self.transport.send(.{
                     .method = call.method,
@@ -234,51 +236,15 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                     .headers = headers,
                     .timeout_ms = self.request_timeout_ms,
                 }, response.allocator());
-                const elapsed_ms = started.durationTo(std.Io.Clock.awake.now(self.io)).toMilliseconds();
-
-                var http_status: u16 = 0;
-                var server_delay: ?u32 = null;
-                const err: Error = if (outcome) |res| e: {
-                    http_status = res.status;
-                    log.debug("{t} {s} -> {d} in {d} ms (attempt {d} of {d})", .{
-                        call.method, log_path, res.status, elapsed_ms, attempt, max_attempts,
-                    });
-                    if (res.status >= 200 and res.status < 300) {
-                        if (self.diagnostics) |d| d.clear();
-                        return res.body;
-                    }
+                const failed: Failed = if (outcome) |res| f: {
+                    const refused = try self.answered(scratch.allocator(), &attempts, res, started) orelse return res.body;
                     if (call.error_body_out) |out| out.* = res.body;
-                    const failed = self.failure(scratch.allocator(), res);
-                    server_delay = try self.serverDelay(scratch.allocator(), res);
-                    break :e failed;
-                } else |err| e: {
-                    log.debug("{t} {s} -> {t} in {d} ms (attempt {d} of {d})", .{
-                        call.method, log_path, err, elapsed_ms, attempt, max_attempts,
-                    });
-                    if (self.diagnostics) |d| d.print("{t}", .{err});
-                    break :e err;
+                    break :f refused;
+                } else |err| f: {
+                    self.unanswered(&attempts, err, started);
+                    break :f .{ .err = err };
                 };
-
-                // A 401 usually means the token died between being fetched
-                // and being used. The server refused the request before
-                // acting on it, so trying again with a fresh token is safe
-                // even for a call that otherwise never retries.
-                if (http_status == 401 and !reauthenticated and self.dropCachedToken()) {
-                    reauthenticated = true;
-                    max_attempts += 1;
-                    log.warn("{t} {s} was refused as unauthenticated; retrying once with a fresh token", .{ call.method, log_path });
-                    resetResponse(response, call.wipe, call.error_body_out);
-                    continue;
-                }
-
-                if (attempt >= max_attempts or !retryable(err, http_status)) return err;
-                const delay_ms = self.waitMs(attempt, server_delay, call.method, log_path, err) orelse return err;
-                if (self.pastWindow(call.retry_window_ms, first_started, delay_ms, call.method, log_path, err)) return err;
-                log.warn("{t} {s} failed with {t}; retrying in {d} ms (attempt {d} of {d})", .{
-                    call.method, log_path, err, delay_ms, attempt + 1, max_attempts,
-                });
-                resetResponse(response, call.wipe, call.error_body_out);
-                try self.io.sleep(.fromMilliseconds(delay_ms), .awake);
+                try self.again(&attempts, response, failed);
             }
         }
 
@@ -323,18 +289,19 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             var scratch: std.heap.ArenaAllocator = .init(self.gpa);
             defer scratch.deinit();
             const url = try self.callUrl(scratch.allocator(), call.path);
-            const log_path = logPath(call.path);
-            // A streamed body is spent by its first attempt.
-            var max_attempts: u32 = if (call.retry and streamed == null) self.retry.max_attempts else 1;
             const headers = try self.allHeaders(scratch.allocator(), call.headers);
-            const retryable = call.retryable orelse Cloud.retryable;
-
-            var reauthenticated = false;
-            const first_started = std.Io.Clock.awake.now(self.io);
-            var attempt: u32 = 1;
-            while (true) : (attempt += 1) {
-                if (self.server_delay_out) |out| out.* = null;
-                const bearer = try self.bearerToken(scratch.allocator());
+            var attempts: Attempts = .{
+                .method = call.method,
+                .log_path = logPath(call.path),
+                // A streamed body is spent by its first attempt.
+                .max = if (call.retry and streamed == null) self.retry.max_attempts else 1,
+                .retryable = call.retryable orelse Cloud.retryable,
+                .window_ms = call.retry_window_ms,
+                .first_started = std.Io.Clock.awake.now(self.io),
+            };
+            const body = requestBody(call.body, streamed);
+            while (true) : (attempts.number += 1) {
+                const bearer = try self.beginAttempt(scratch.allocator());
                 const started = std.Io.Clock.awake.now(self.io);
                 const outcome = self.transport.sendStream(.{
                     .method = call.method,
@@ -342,81 +309,46 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                     .bearer = bearer,
                     .content_type = call.content_type,
                     .headers = headers,
-                    .body = if (streamed) |s| .{ .stream = .{ .reader = s.reader, .len = s.len } } else switch (call.body) {
-                        .none => .none,
-                        .segments => |segments| .{ .segments = segments },
-                    },
+                    .body = body,
                     .sink = call.sink,
                     .accept_encoding = call.accept_encoding,
                     .timeout_ms = call.timeout_ms orelse self.request_timeout_ms,
                     .head_out = call.head_out,
                 }, response.allocator());
-                const elapsed_ms = started.durationTo(std.Io.Clock.awake.now(self.io)).toMilliseconds();
-
-                var http_status: u16 = 0;
-                var server_delay: ?u32 = null;
-                var mid_body = false;
-                const err: StreamBodyError = if (outcome) |res| e: {
-                    http_status = res.status;
-                    log.debug("{t} {s} -> {d} in {d} ms (attempt {d} of {d})", .{
-                        call.method, log_path, res.status, elapsed_ms, attempt, max_attempts,
-                    });
-                    if (res.status >= 200 and res.status < 300) {
-                        if (self.diagnostics) |d| d.clear();
-                        return res;
-                    }
+                const failed: Failed = if (outcome) |res| f: {
                     const buffered: Response = .{ .status = res.status, .body = res.body, .headers = res.headers };
-                    const failed = self.failure(scratch.allocator(), buffered);
-                    server_delay = try self.serverDelay(scratch.allocator(), buffered);
-                    break :e failed;
-                } else |err| e: {
-                    log.debug("{t} {s} -> {t} in {d} ms (attempt {d} of {d})", .{
-                        call.method, log_path, err, elapsed_ms, attempt, max_attempts,
-                    });
-                    if (self.diagnostics) |d| d.print("{t}", .{err});
-                    break :e switch (err) {
-                        // The caller's sink writer failed; nothing to retry.
-                        error.WriteFailed => return error.WriteFailed,
-                        // The caller's body reader failed or ran short. Only
-                        // a streamed body reads, and it is never retried.
-                        error.ReadFailed, error.EndOfStream => |e| if (streamed != null) return e else unreachable,
-                        else => |e| b: {
-                            // A transport failure may have delivered part of
-                            // the body to a writer sink already, which only a
-                            // sink that can start over takes back.
-                            if (call.sink == .writer) {
-                                mid_body = if (call.restart) |r| !r.restart(r.ptr) else true;
-                            }
-                            break :b e;
-                        },
-                    };
+                    break :f try self.answered(scratch.allocator(), &attempts, buffered, started) orelse return res;
+                } else |err| f: {
+                    self.unanswered(&attempts, err, started);
+                    break :f try streamFailure(err, call, streamed != null);
                 };
 
-                // A 401 response is buffered whatever the sink, so retrying
-                // it once with a fresh token is safe even there. A streamed
+                // A 401 response is buffered whatever the sink, so `again`
+                // retries it once with a fresh token even there. A streamed
                 // body is spent, so it only gets the token dropped, for the
                 // caller's next attempt.
-                if (http_status == 401 and streamed != null) {
+                if (failed.http_status == 401 and streamed != null) {
                     _ = self.dropCachedToken();
-                    return err;
+                    return failed.err;
                 }
-                if (http_status == 401 and !reauthenticated and self.dropCachedToken()) {
-                    reauthenticated = true;
-                    max_attempts += 1;
-                    log.warn("{t} {s} was refused as unauthenticated; retrying once with a fresh token", .{ call.method, log_path });
-                    _ = response.reset(.retain_capacity);
-                    continue;
-                }
-
-                if (mid_body or attempt >= max_attempts or !retryable(err, http_status)) return err;
-                const delay_ms = self.waitMs(attempt, server_delay, call.method, log_path, err) orelse return err;
-                if (self.pastWindow(call.retry_window_ms, first_started, delay_ms, call.method, log_path, err)) return err;
-                log.warn("{t} {s} failed with {t}; retrying in {d} ms (attempt {d} of {d})", .{
-                    call.method, log_path, err, delay_ms, attempt + 1, max_attempts,
-                });
-                _ = response.reset(.retain_capacity);
-                try self.io.sleep(.fromMilliseconds(delay_ms), .awake);
+                try self.again(&attempts, response, failed);
             }
+        }
+
+        /// A streaming attempt that got no response: the caller's own
+        /// stream failing, returned, or the transport's failure.
+        fn streamFailure(err: transport.StreamError, call: StreamCall, streamed: bool) StreamBodyError!Failed {
+            return switch (err) {
+                // The caller's sink writer failed; nothing to retry.
+                error.WriteFailed => error.WriteFailed,
+                // The caller's body reader failed or ran short. Only a
+                // streamed body reads, and it is never retried.
+                error.ReadFailed, error.EndOfStream => |e| if (streamed) e else unreachable,
+                // A transport failure may have delivered part of the body to
+                // a writer sink already, which only a sink that can start
+                // over takes back.
+                else => |e| .{ .err = e, .last = call.sink == .writer and !restarted(call.restart) },
+            };
         }
 
         /// `execute` for calls whose response body is not needed.
@@ -472,32 +404,139 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             return ms;
         }
 
+        /// What the loop keeps across one call's attempts, the buffered
+        /// entry's and the streamed entry's alike.
+        const Attempts = struct {
+            method: transport.Method,
+            /// The path without its query, for the log.
+            log_path: []const u8,
+            /// One more after a 401's fresh token.
+            max: u32,
+            retryable: RetryableFn,
+            /// `Call.retry_window_ms`.
+            window_ms: ?u32,
+            first_started: std.Io.Timestamp,
+            /// `Call.wipe`: a failed attempt's response memory goes back at
+            /// once, to be wiped, rather than kept for the next.
+            wipe: bool = false,
+            /// `Call.error_body_out`, cleared with the response it points into.
+            error_body_out: ?*?[]const u8 = null,
+            /// The attempt under way, from 1.
+            number: u32 = 1,
+            /// Whether the fresh-token retry after a 401 has been spent.
+            reauthenticated: bool = false,
+        };
+
+        /// An attempt that failed: its error, its response's status (0 with
+        /// none), the delay the response asked for, and whether it must be
+        /// the last whatever the policy says.
+        const Failed = struct {
+            err: Error,
+            http_status: u16 = 0,
+            server_delay: ?u32 = null,
+            /// Part of a body went to a writer sink that cannot take it back.
+            last: bool = false,
+        };
+
+        /// What follows a failed attempt.
+        const Next = union(enum) {
+            /// None: the call returns the attempt's error.
+            stop,
+            /// Another at once, with a fresh token.
+            now,
+            /// Another after this many milliseconds.
+            after_ms: u32,
+        };
+
+        /// What every attempt starts with: no delay asked for yet, and the
+        /// token to send, or null for none.
+        fn beginAttempt(self: Self, scratch: Allocator) Error!?[]const u8 {
+            if (self.server_delay_out) |out| out.* = null;
+            return self.bearerToken(scratch);
+        }
+
+        /// An attempt's response, logged: null for a 2xx, which clears
+        /// `Diagnostics`; else the failure as the hook maps it, with the
+        /// delay the response asked for.
+        fn answered(self: Self, scratch: Allocator, a: *const Attempts, res: Response, started: std.Io.Timestamp) Allocator.Error!?Failed {
+            self.logAttempt(a, "{d}", res.status, started);
+            if (res.status >= 200 and res.status < 300) {
+                if (self.diagnostics) |d| d.clear();
+                return null;
+            }
+            const err = self.failure(scratch, res);
+            return .{ .err = err, .http_status = res.status, .server_delay = try self.serverDelay(scratch, res) };
+        }
+
+        /// An attempt that got no response: logged, and named in
+        /// `Diagnostics`.
+        fn unanswered(self: Self, a: *const Attempts, err: anyerror, started: std.Io.Timestamp) void {
+            self.logAttempt(a, "{t}", err, started);
+            if (self.diagnostics) |d| d.print("{t}", .{err});
+        }
+
+        /// One attempt's outcome, `what` a status or an error, with the
+        /// time it took. Never a token, a header or the query.
+        fn logAttempt(self: Self, a: *const Attempts, comptime what_fmt: []const u8, what: anytype, started: std.Io.Timestamp) void {
+            const elapsed_ms = started.durationTo(std.Io.Clock.awake.now(self.io)).toMilliseconds();
+            log.debug("{t} {s} -> " ++ what_fmt ++ " in {d} ms (attempt {d} of {d})", .{
+                a.method, a.log_path, what, elapsed_ms, a.number, a.max,
+            });
+        }
+
+        /// After a failed attempt: its error when none follows; else the
+        /// response cleared for the next, once the wait before it is over.
+        fn again(self: Self, a: *Attempts, response: *std.heap.ArenaAllocator, failed: Failed) Error!void {
+            switch (self.next(a, failed)) {
+                .stop => return failed.err,
+                .now => resetResponse(response, a.wipe, a.error_body_out),
+                .after_ms => |ms| {
+                    resetResponse(response, a.wipe, a.error_body_out);
+                    try self.io.sleep(.fromMilliseconds(ms), .awake);
+                },
+            }
+        }
+
+        /// What follows a failed attempt, logged when it is another.
+        fn next(self: Self, a: *Attempts, failed: Failed) Next {
+            if (failed.last) return .stop;
+            // A 401 usually means the token died between being fetched and
+            // being used. The server refused the request before acting on
+            // it, so trying again with a fresh token is safe even for a call
+            // that otherwise never retries.
+            if (failed.http_status == 401 and !a.reauthenticated and self.dropCachedToken()) {
+                a.reauthenticated = true;
+                a.max += 1;
+                log.warn("{t} {s} was refused as unauthenticated; retrying once with a fresh token", .{ a.method, a.log_path });
+                return .now;
+            }
+            if (a.number >= a.max or !a.retryable(failed.err, failed.http_status)) return .stop;
+            const delay_ms = self.waitMs(a, failed) orelse return .stop;
+            if (self.pastWindow(a, delay_ms, failed.err)) return .stop;
+            log.warn("{t} {s} failed with {t}; retrying in {d} ms (attempt {d} of {d})", .{
+                a.method, a.log_path, failed.err, delay_ms, a.number + 1, a.max,
+            });
+            return .{ .after_ms = delay_ms };
+        }
+
         /// The wait before the next attempt, or null, logged, when the
         /// server asked for longer than the policy waits.
-        fn waitMs(self: Self, attempt: u32, server_delay: ?u32, method: transport.Method, log_path: []const u8, err: anyerror) ?u32 {
-            if (self.retry.waitMs(attempt, entropy(self.io), server_delay)) |ms| return ms;
+        fn waitMs(self: Self, a: *const Attempts, failed: Failed) ?u32 {
+            if (self.retry.waitMs(a.number, entropy(self.io), failed.server_delay)) |ms| return ms;
             log.warn("{t} {s} failed with {t}; not retried: the server asked to wait {d} ms, longer than max_backoff_ms ({d} ms)", .{
-                method, log_path, err, server_delay.?, self.retry.max_backoff_ms,
+                a.method, a.log_path, failed.err, failed.server_delay.?, self.retry.max_backoff_ms,
             });
             return null;
         }
 
         /// Whether a retry `delay_ms` from now would begin past the call's
         /// window, counted from its first attempt; logged when it would.
-        fn pastWindow(
-            self: Self,
-            window_ms: ?u32,
-            first_started: std.Io.Timestamp,
-            delay_ms: u32,
-            method: transport.Method,
-            log_path: []const u8,
-            err: anyerror,
-        ) bool {
-            const window = window_ms orelse return false;
-            const elapsed = first_started.durationTo(std.Io.Clock.awake.now(self.io)).toMilliseconds();
+        fn pastWindow(self: Self, a: *const Attempts, delay_ms: u32, err: anyerror) bool {
+            const window = a.window_ms orelse return false;
+            const elapsed = a.first_started.durationTo(std.Io.Clock.awake.now(self.io)).toMilliseconds();
             if (elapsed + delay_ms <= window) return false;
             log.warn("{t} {s} failed with {t}; not retried: {d} ms after its first attempt, past its {d} ms window", .{
-                method, log_path, err, elapsed + delay_ms, window,
+                a.method, a.log_path, err, elapsed + delay_ms, window,
             });
             return true;
         }
@@ -592,6 +631,23 @@ fn resetResponse(response: *std.heap.ArenaAllocator, wipe: bool, error_body_out:
     // The body it pointed at goes with the reset.
     if (error_body_out) |out| out.* = null;
     _ = response.reset(if (wipe) .free_all else .retain_capacity);
+}
+
+/// What a streaming call sends: the reader's bytes when it has them, else
+/// its replayable body.
+fn requestBody(body: StreamCall.Body, streamed: ?StreamBody) transport.StreamRequest.Body {
+    if (streamed) |s| return .{ .stream = .{ .reader = s.reader, .len = s.len } };
+    return switch (body) {
+        .none => .none,
+        .segments => |segments| .{ .segments = segments },
+    };
+}
+
+/// Whether a writer sink has taken back what a failed attempt delivered and
+/// is ready for the body again. False with no way to ask.
+fn restarted(restart: ?StreamCall.Restart) bool {
+    const r = restart orelse return false;
+    return r.restart(r.ptr);
 }
 
 /// Whether a failed attempt may be tried again when a repeat would act
