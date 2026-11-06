@@ -86,6 +86,23 @@ latest attempt got no response, and from `executeDiscard`). The loop logs
 the method, the path without its query, the status and the time, never a
 token.
 
+A library may wrap `Call` and `StreamCall` in types of its own, as gcp.zig
+does for its per-call quota project, and copy their fields across. A field
+a later release adds (0.2.0's `head_out` and `content_type`) then never
+reaches its modules until it copies that too, and nothing fails. A test
+beside the wrapper catches it on the bump:
+
+```zig
+test "every rest_core.loop.Call field has a counterpart in Call" {
+    inline for (comptime std.meta.fieldNames(rest_core.loop.Call)) |name| {
+        try std.testing.expect(@hasField(Call, name));
+    }
+}
+```
+
+`PreparedRequest.fromCall` takes the `loop.Call` such a wrapper builds, so
+a preview stays byte for byte what the call sends.
+
 A URL a server gives (a next page, an upload session, an operation to
 poll) is followed through `loop.pathOnOrigin(engine.base_url, url)`, which
 returns its path only when it is on the engine's own origin, so the token
