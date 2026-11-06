@@ -151,6 +151,8 @@ const ArmShaped = struct {
         if (diagnostics) |d| {
             d.set(res.status, code, message);
             if (header(res.headers, "x-ms-request-id")) |id| d.setRequestId(id);
+            // ARM's own id for the operation, which its support asks for.
+            if (header(res.headers, "x-ms-correlation-request-id")) |id| d.setCorrelationId(id);
         }
         return switch (res.status) {
             400 => error.BadRequest,
@@ -1140,11 +1142,15 @@ test "executeStreamBody: the reader's bytes go once; a transient failure and a 4
 
 const ArmH = Harness(ArmEngine);
 
-test "ARM: x-ms-retry-after-ms is waited, and the code and request id are kept" {
+test "ARM: x-ms-retry-after-ms is waited, and the code and both ids are kept" {
     var h: ArmH = undefined;
     const throttled: Reply = .{ .respond = .{
         .status = 429,
-        .headers = &.{ .{ .name = "x-ms-retry-after-ms", .value = "1500" }, .{ .name = "x-ms-request-id", .value = "0d3f4c11-7b2a-4e9b-a1e0-5c6d7e8f9a0b" } },
+        .headers = &.{
+            .{ .name = "x-ms-retry-after-ms", .value = "1500" },
+            .{ .name = "x-ms-request-id", .value = "0d3f4c11-7b2a-4e9b-a1e0-5c6d7e8f9a0b" },
+            .{ .name = "x-ms-correlation-request-id", .value = "7a9b8c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d" },
+        },
         .body = "{\"error\":{\"code\":\"TooManyRequests\",\"message\":\"The request is being throttled.\"}}",
     } };
     h.init(&.{ throttled, .{ .respond = .{ .body = "{\"id\":\"/subscriptions/s\"}" } } });
@@ -1162,6 +1168,7 @@ test "ARM: x-ms-retry-after-ms is waited, and the code and request id are kept" 
     try testing.expectEqualStrings("TooManyRequests", lone.diag.code());
     try testing.expectEqualStrings("The request is being throttled.", lone.diag.message());
     try testing.expectEqualStrings("0d3f4c11-7b2a-4e9b-a1e0-5c6d7e8f9a0b", lone.diag.requestId());
+    try testing.expectEqualStrings("7a9b8c6d-5e4f-4a3b-9c2d-1e0f2a3b4c5d", lone.diag.correlationId());
     try testing.expectEqual(1_500, lone.diag.retry_after_ms.?);
 }
 
