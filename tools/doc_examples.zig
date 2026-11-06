@@ -1,4 +1,4 @@
-// From yaml.zig tools/doc_examples.zig at aad9a5e, with a check of the documents' relative links added.
+// From yaml.zig tools/doc_examples.zig at aad9a5e, with a check of the documents' relative links added, and its arguments read so Windows compiles it.
 //! Keeps the examples in README.md and docs/*.md true. A code block
 //! marked with a comment naming a file, at the start of a line,
 //!
@@ -179,9 +179,9 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     var c: Check = .{ .arena = arena, .io = io, .dir = Io.Dir.cwd(), .fix = false };
-    var args: std.process.Args.Iterator = .init(init.minimal.args);
-    _ = args.skip();
-    while (args.next()) |arg| {
+    // toSlice, not an Args.Iterator: Windows has no allocation-free one.
+    const args = try init.minimal.args.toSlice(arena);
+    for (args[1..]) |arg| {
         if (!std.mem.eql(u8, arg, "--fix")) {
             std.debug.print("usage: doc-examples [--fix]   (from the repository root)\n", .{});
             std.process.exit(2);
