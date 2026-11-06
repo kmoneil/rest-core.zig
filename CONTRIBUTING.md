@@ -1,0 +1,29 @@
+# Contributing
+
+## Setup
+
+You need Zig 0.17.1. `zig build test` also runs two programs that must be
+on the PATH: [zigvet](https://github.com/kmoneil/zigvet), which reports
+code the compiler accepts that is almost certainly wrong, and
+[gnarl](https://github.com/kmoneil/gnarl), which holds each function to
+its complexity limits (`brew install kmoneil/tap/zigvet kmoneil/tap/gnarl`).
+gnarl must be the release `complexity.zon` names in `.gnarl`: two releases
+can count the same function differently.
+
+```
+zig build test          # unit, property and fuzz-corpus tests, formatting, zigvet, gnarl
+zig build test-release  # the unit tests with the library built ReleaseSafe and ReleaseFast
+zig build fmt           # format the Zig
+```
+
+[docs/development.md](docs/development.md) lists every build step.
+
+## Before a commit
+
+- `zig build test test-release` passes, and prints nothing from zigvet or
+  gnarl.
+- `gnarl --diff HEAD` shows no function newly over its limit. A new
+  function over a critical limit is refactored, not added to
+  `complexity.baseline`.
+- A file ported from gcp.zig keeps its first line, naming the gcp.zig file
+  and commit it came from.
