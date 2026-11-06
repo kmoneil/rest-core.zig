@@ -27,3 +27,7 @@ zig build fmt           # format the Zig
   `complexity.baseline`.
 - A file ported from gcp.zig keeps its first line, naming the gcp.zig file
   and commit it came from.
+- A defence against a known attack has a row in
+  [test/security/CATALOG.md](test/security/CATALOG.md) and a test named
+  `security: ...` under test/security. Report a vulnerability as
+  [SECURITY.md](SECURITY.md) says, not in a public issue.

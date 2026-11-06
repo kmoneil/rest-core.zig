@@ -15,6 +15,7 @@ zig build fmt                           # format the Zig
 zig build docs                          # the API reference, into zig-out/docs
 zig build lint                          # zigvet: code that compiles but is wrong
 zig build complexity                    # gnarl --check: complexity against complexity.baseline
+zig build security                      # the security suite, and its catalog checked against it
 ```
 
 `lint` and `complexity` run programs from the PATH (CONTRIBUTING.md says
@@ -25,6 +26,16 @@ critical limit today at their numbers: two in `tools/test_runner.zig`,
 std's runner carried unchanged. A ported file joins `complexity.zon`'s hot
 list in the change that ports it, and a baselined function it brings comes
 with its gcp.zig numbers.
+
+## The security catalog
+
+[test/security/CATALOG.md](../test/security/CATALOG.md) lists every known
+attack on an HTTP and REST client, with its source, the defence, the test
+that proves it and a status. `zig build test` runs
+`tools/security_catalog.zig` over it: a covered row whose test is gone, or
+a test named `security: ...` under test/security that no row names, fails
+the build. A change that adds a defence turns its row covered with the
+test; one that finds a defence missing adds a `gap` row.
 
 Every test build runs under `tools/test_runner.zig`: Zig 0.17's test
 runner with `std.debug` waiting uncancelably, carried from gcp.zig, whose

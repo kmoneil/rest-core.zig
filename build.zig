@@ -41,6 +41,16 @@ pub fn build(b: *std.Build) void {
         .test_runner = test_runner,
         .use_llvm = if (fuzz_runner) true else null,
     })).step);
+    // The security suite (test/security): a test per known attack, through
+    // the public API only. Each is a row of test/security/CATALOG.md.
+    const security_tests = b.addTest(.{
+        .name = "security",
+        .root_module = securityModule(b, target, optimize, mod),
+        .filters = test_filters,
+        .test_runner = test_runner,
+        .use_llvm = if (fuzz_runner) true else null,
+    });
+    unit_step.dependOn(&b.addRunArtifact(security_tests).step);
 
     // The same tests with the library built ReleaseSafe and ReleaseFast. A
     // consumer builds this library in the mode it ships, and in ReleaseFast
@@ -59,14 +69,39 @@ pub fn build(b: *std.Build) void {
             .filters = test_filters,
             .test_runner = test_runner,
         })).step);
+        release_step.dependOn(&b.addRunArtifact(b.addTest(.{
+            .name = b.fmt("security-{t}", .{mode}),
+            .root_module = securityModule(b, target, mode, release_mod),
+            .filters = test_filters,
+            .test_runner = test_runner,
+        })).step);
     }
+
+    // tools/security_catalog.zig holds the catalog to the tests: a covered
+    // row whose test is gone, or a `security: ...` test no row names, fails
+    // `zig build test`. It reads files the build does not track, so it
+    // always runs (it takes milliseconds).
+    const catalog_tool = b.addExecutable(.{ .name = "security-catalog", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/security_catalog.zig"),
+        .target = b.graph.host,
+        .optimize = .safe,
+    }) });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = catalog_tool.root_module, .test_runner = test_runner })).step);
+    const check_catalog = b.addRunArtifact(catalog_tool);
+    check_catalog.setCwd(b.path("."));
+    check_catalog.addArgs(&.{ "test/security/CATALOG.md", "test/security" });
+    check_catalog.has_side_effects = true;
+    test_step.dependOn(&check_catalog.step);
+    const security_step = b.step("security", "Run the security suite and check its catalog (test/security)");
+    security_step.dependOn(&b.addRunArtifact(security_tests).step);
+    security_step.dependOn(&check_catalog.step);
 
     // zigvet (github.com/kmoneil/zigvet) reports code the compiler accepts
     // that is almost certainly wrong. A program on the PATH, not a package;
-    // `zig build test` runs it, so no change is tested without it. Add test/
-    // and examples/ here when they exist. It skips zig-pkg and hidden
-    // directories by itself.
-    const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "tools" });
+    // `zig build test` runs it, so no change is tested without it. Add
+    // examples/ here when it exists. It skips zig-pkg and hidden directories
+    // by itself.
+    const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "test", "tools" });
     lint.setCwd(b.path("."));
     b.step("lint", "Report code that compiles but is wrong (zigvet, from the PATH)").dependOn(&lint.step);
     test_step.dependOn(&lint.step);
@@ -83,12 +118,22 @@ pub fn build(b: *std.Build) void {
     b.step("complexity", "Fail a function newly over its complexity limit (gnarl, from the PATH)").dependOn(&complexity.step);
     test_step.dependOn(&complexity.step);
 
-    const fmt_paths: []const std.Build.LazyPath = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("tools") };
+    const fmt_paths: []const std.Build.LazyPath = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("test"), b.path("tools") };
     test_step.dependOn(&b.addFmt(.{ .paths = fmt_paths, .check = true }).step);
-    b.step("fmt", "Format the Zig in build.zig, src/ and tools/").dependOn(&b.addFmt(.{ .paths = fmt_paths }).step);
+    b.step("fmt", "Format the Zig in build.zig, src/, test/ and tools/").dependOn(&b.addFmt(.{ .paths = fmt_paths }).step);
 
     // The API reference, from the doc comments: zig-out/docs/index.html.
     const lib = b.addLibrary(.{ .name = "rest_core", .root_module = mod });
     const docs = b.addInstallDirectory(.{ .source_dir = lib.getEmittedDocs(), .install_dir = .prefix, .install_subdir = "docs" });
     b.step("docs", "Build the API reference into zig-out/docs").dependOn(&docs.step);
+}
+
+/// The security suite's module, over `rest_core` built as `mod` is.
+fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, mod: *std.Build.Module) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("test/security/security_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "rest_core", .module = mod }},
+    });
 }
