@@ -122,7 +122,8 @@ transport now holds every bearer token to. testing.zig gained
 retry.zig's `isRetryable` covers the transport's failures only; the
 statuses gcp.zig retries (RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE,
 DEADLINE_EXCEEDED) are its hook's. retry_after.zig reads only headers,
-`x-ms-retry-after-ms` added: `serverDelayMs` takes no body or arena, the
+`x-ms-retry-after-ms` added: `serverDelayMs` takes no body or arena but
+the header type, so retry_after.zig no longer imports transport.zig, the
 `google.rpc.RetryInfo` delay and its `durationMs` stay Google's, and
 `Asked` lost its `retry_info` form. loop.zig is rpc.zig's engine made
 generic over a cloud's hook (`Engine(log_scope, Cloud)`): Google's error

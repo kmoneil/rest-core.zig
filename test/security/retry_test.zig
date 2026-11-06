@@ -18,16 +18,16 @@ test "security: CWE-400 a Retry-After built to stall or overflow neither sleeps 
         .{ "x-ms-retry-after-ms", "99999999999999999999" },
         .{ "Retry-After", "Fri, 31 Dec 9999 23:59:59 GMT" },
     }) |h| {
-        try testing.expectEqual(max, retry_after.serverDelayMs(&.{.{ .name = h[0], .value = h[1] }}, now).?);
+        try testing.expectEqual(max, retry_after.serverDelayMs(std.http.Header, &.{.{ .name = h[0], .value = h[1] }}, now).?);
     }
     // Negative, fractional, signed, malformed and empty values are ignored:
     // the server asked for nothing.
     for ([_][]const u8{ "-1", "1.5", "+5", "1e9", "soon", "" }) |value| {
-        try testing.expectEqual(null, retry_after.serverDelayMs(&.{.{ .name = "Retry-After", .value = value }}, now));
+        try testing.expectEqual(null, retry_after.serverDelayMs(std.http.Header, &.{.{ .name = "Retry-After", .value = value }}, now));
     }
     // A date in the past waits nothing, the year 0000 included.
-    try testing.expectEqual(0, retry_after.serverDelayMs(&.{.{ .name = "Retry-After", .value = "Thu, 01 Jan 1970 00:00:00 GMT" }}, now).?);
-    try testing.expectEqual(0, retry_after.serverDelayMs(&.{.{ .name = "Retry-After", .value = "Sat, 01 Jan 0000 00:00:00 GMT" }}, now).?);
+    try testing.expectEqual(0, retry_after.serverDelayMs(std.http.Header, &.{.{ .name = "Retry-After", .value = "Thu, 01 Jan 1970 00:00:00 GMT" }}, now).?);
+    try testing.expectEqual(0, retry_after.serverDelayMs(std.http.Header, &.{.{ .name = "Retry-After", .value = "Sat, 01 Jan 0000 00:00:00 GMT" }}, now).?);
 
     // And a delay past the policy's cap is no wait at all: the failure goes
     // back to the caller, rather than a task asleep for 49 days.

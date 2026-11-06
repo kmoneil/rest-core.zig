@@ -30,7 +30,8 @@ pub const RetryPolicy = @import("retry.zig").RetryPolicy;
 pub const isRetryable = @import("retry.zig").isRetryable;
 
 /// A refused response's own retry delay: `Retry-After`, `retry-after-ms`
-/// and `x-ms-retry-after-ms`, read into milliseconds.
+/// and `x-ms-retry-after-ms`, read into milliseconds. Like `RetryPolicy`
+/// and `http_date`, it needs neither the transport nor the loop.
 pub const retry_after = @import("retry_after.zig");
 
 /// A request as a client would send it, built without sending it, for a

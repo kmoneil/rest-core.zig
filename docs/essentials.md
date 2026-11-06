@@ -129,10 +129,13 @@ any header meets.
 `timestamp.parse` and `format` read and write RFC 3339, from 0001 to 9999
 in UTC; whatever `parse` returns, `format` can write. `http_date` reads all
 three of RFC 9110's date formats, as a recipient must, and writes
-IMF-fixdate. `retry_after.serverDelayMs` reads a refused response's
-`Retry-After` (seconds, or a date against the response's own `Date`),
-`retry-after-ms` and `x-ms-retry-after-ms`, saturating at `maxInt(u32)`
-milliseconds.
+IMF-fixdate. `retry_after.serverDelayMs(H, headers, received_at)` reads
+a refused response's `Retry-After` (seconds, or a date against the
+response's own `Date`), `retry-after-ms` and `x-ms-retry-after-ms`,
+saturating at `maxInt(u32)` milliseconds. `H` is the header type, std's
+or a client's own: `RetryPolicy`, `retry_after` and `http_date` need
+neither the transport nor the loop, for a client with an HTTP stack of
+its own.
 
 ## Memory
 

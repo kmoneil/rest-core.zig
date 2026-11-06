@@ -39,7 +39,7 @@ pub const RetryPolicy = struct {
     }
 
     /// The wait before retry number `retry`, given the delay the refused
-    /// response asked for (`core.retry_after.serverDelayMs`), or null to
+    /// response asked for (`retry_after.serverDelayMs`), or null to
     /// stop retrying. With no delay, `backoffMs`. With one, the larger of
     /// the two, since a server's delay is a floor and nothing is taken off
     /// it; and when it is longer than `max_backoff_ms`, null: the failure

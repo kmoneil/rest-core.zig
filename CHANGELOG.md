@@ -83,9 +83,11 @@ Until 1.0, minor versions may break the API; each entry says how.
 - `RetryPolicy`, `isRetryable` and `retry_after`, from gcp.zig. Unlike
   gcp.zig's, `isRetryable` covers only the transport's failures, a
   server's statuses being each cloud's to judge; `retry_after` reads
-  `x-ms-retry-after-ms` too, and only headers: `serverDelayMs(headers,
+  `x-ms-retry-after-ms` too, and only headers: `serverDelayMs(H, headers,
   received_at)` takes no body, since a delay in one (Google's `RetryInfo`)
-  is the cloud's to read. `retry_after.larger` joins the two.
+  is the cloud's to read. `retry_after.larger` joins the two. `H` is the
+  header type, std's or a client's own, so `retry`, `retry_after` and
+  `http_date` serve a client with its own HTTP stack (ekur asked).
 - `TokenProvider` gains an optional `headers`: what a credential adds to
   each request it authorizes, as gcp.zig's quota project. The loop sends
   them with the token only, merged by name (the call's own, then the
