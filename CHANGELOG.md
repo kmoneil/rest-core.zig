@@ -2,7 +2,10 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
-## Unreleased
+## 0.2.0 (2026-11-06)
+
+From the trials azure.zig and gcp.zig ran on 0.1.0. One break, the HEAD
+method's below.
 
 - `transport.Method.HEAD`, for Blob Storage's Get Blob Properties and
   the like. `HttpTransport` sends it with no body and reads none back,
