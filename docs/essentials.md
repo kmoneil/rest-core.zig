@@ -16,7 +16,10 @@ hands a client `testing.FakeTransport` instead.
   The limit runs on a second task, a timer raced against the request.
   Where the `Io` cannot start one (a single-threaded `Io`, or one whose
   `concurrent_limit` is spent), the request is
-  `error.ConcurrencyUnavailable`, never sent untimed.
+  `error.ConcurrencyUnavailable`, never sent untimed. One known limit: while
+  the `Io`'s `async_limit` is spent, a connect that stalls can outlive the
+  time limit, since std's connect loses the cancel then (Codeberg
+  ziglang/zig#37192); give the `Io` async capacity to spare.
 - **What it refuses before sending.** A URL with a control byte, a space or
   a backslash, userinfo, or a percent-encoded host
   (`error.InvalidEndpoint`): std would write a CR and LF in the path into
