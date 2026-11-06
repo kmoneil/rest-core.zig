@@ -86,6 +86,12 @@ Until 1.0, minor versions may break the API; each entry says how.
   `x-ms-retry-after-ms` too, and only headers: `serverDelayMs(headers,
   received_at)` takes no body, since a delay in one (Google's `RetryInfo`)
   is the cloud's to read. `retry_after.larger` joins the two.
+- `TokenProvider` gains an optional `headers`: what a credential adds to
+  each request it authorizes, as gcp.zig's quota project. The loop sends
+  them with the token only, merged by name (the call's own, then the
+  credential's, then the engine's), and `Engine.send_credential_headers`
+  turns them off. A call's header no longer goes out beside an engine
+  header of the same name.
 - `testing.ScriptedServer`: a loopback server that answers with scripted
   bytes and records what it was sent.
 - The README, docs/essentials.md and three examples (the transport, a

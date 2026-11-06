@@ -32,6 +32,8 @@ pub const FakeTokenProvider = struct {
     /// When set, `invalidate` makes this the token from then on, so a test
     /// can tell a freshly fetched token from the cached one.
     next_token: ?[]const u8 = null,
+    /// What `headers` returns: the headers this credential adds.
+    credential_headers: []const Header = &.{},
     /// `getToken` calls so far, failed ones included.
     calls: usize = 0,
     invalidations: usize = 0,
@@ -44,7 +46,12 @@ pub const FakeTokenProvider = struct {
         return .{ .ptr = self, .vtable = &.{
             .getToken = getToken,
             .invalidate = invalidate,
+            .headers = headersFn,
         } };
+    }
+
+    fn headersFn(ptr: *anyopaque) []const Header {
+        return fromPtr(ptr).credential_headers;
     }
 
     /// The first scope of the latest `getToken` call, truncated to 128 bytes.

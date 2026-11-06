@@ -744,6 +744,80 @@ test "unsentOnly: a write that must not repeat is not resent after its request m
     try testing.expectEqual(3, h.fake.requests.items.len);
 }
 
+test "credential headers: they go with the token, on every attempt and both entries" {
+    var h: H = undefined;
+    h.init(&.{ unavailable, ok, ok });
+    defer h.deinit();
+    h.token.credential_headers = &.{.{ .name = "x-goog-user-project", .value = "billing-project" }};
+    const e = h.engine();
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things" });
+    try testing.expectEqualStrings("billing-project", (try h.fake.request(0)).header("x-goog-user-project").?);
+    try testing.expectEqualStrings("billing-project", (try h.fake.request(1)).header("x-goog-user-project").?);
+    _ = try e.executeStream(&h.arena, .{ .method = .GET, .path = "/v1/things" });
+    try testing.expectEqualStrings("billing-project", (try h.fake.streamRequest(0)).header("x-goog-user-project").?);
+}
+
+test "credential headers: a call's own wins over the credential's, and the credential's over the engine's" {
+    var h: H = undefined;
+    h.init(&.{ ok, ok });
+    defer h.deinit();
+    h.token.credential_headers = &.{.{ .name = "x-goog-user-project", .value = "credential-project" }};
+    var e = h.engine();
+    e.headers = &.{ .{ .name = "X-Goog-User-Project", .value = "engine-project" }, .{ .name = "x-engine", .value = "1" } };
+    // A requester-pays call names the project it bills: only that one goes.
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/b", .headers = &.{.{ .name = "x-goog-user-project", .value = "requester" }} });
+    const named = try h.fake.request(0);
+    try testing.expectEqual(2, named.headers.len);
+    try testing.expectEqualStrings("requester", named.header("x-goog-user-project").?);
+    try testing.expectEqualStrings("1", named.header("x-engine").?);
+    // Without it, the credential's, and the engine's same-named one is not sent beside it.
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/b" });
+    const plain = try h.fake.request(1);
+    try testing.expectEqual(2, plain.headers.len);
+    try testing.expectEqualStrings("credential-project", plain.header("x-goog-user-project").?);
+}
+
+test "credential headers: none to an unauthenticated engine, none when turned off, the token still going" {
+    var h: H = undefined;
+    h.init(&.{ ok, ok });
+    defer h.deinit();
+    h.token.credential_headers = &.{.{ .name = "x-goog-user-project", .value = "billing-project" }};
+    var e = h.engine();
+    e.send_credential_headers = false;
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things" });
+    const off = try h.fake.request(0);
+    try testing.expectEqual(null, off.header("x-goog-user-project"));
+    try testing.expectEqualStrings("ya29.fake-token", off.bearer.?);
+    e.send_credential_headers = true;
+    e.unauthenticated = true;
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things" });
+    const emulator = try h.fake.request(1);
+    try testing.expectEqual(null, emulator.header("x-goog-user-project"));
+    try testing.expectEqual(null, emulator.bearer);
+}
+
+test "credential headers: the transport holds them to the rules any header meets" {
+    var h: H = undefined;
+    h.init(&.{});
+    defer h.deinit();
+    var http: transport.HttpTransport = .init(testing.allocator, testing.io, "t");
+    defer http.deinit();
+    var e = h.engine();
+    e.transport = http.transport();
+    e.base_url = "http://127.0.0.1:9";
+    e.retry = .{ .max_attempts = 1 };
+    // A credential that would set a header the transport owns, or one std
+    // would write other than as given, is refused before anything connects.
+    for ([_][]const transport.Header{
+        &.{.{ .name = "Host", .value = "evil.example" }},
+        &.{.{ .name = "Content-Length", .value = "0" }},
+        &.{.{ .name = "x-goog-user-project", .value = "p\r\nX-Injected: y" }},
+    }) |bad| {
+        h.token.credential_headers = bad;
+        try testing.expectError(error.InvalidRequestHeader, e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things" }));
+    }
+}
+
 test "executeDiscard sends the call and keeps nothing" {
     var h: H = undefined;
     h.init(&.{ unavailable, .{ .respond = .{ .body = "{}" } } });

@@ -156,9 +156,14 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         /// This endpoint must never receive credentials: an emulator speaks
         /// plain HTTP and needs none.
         unauthenticated: bool = false,
-        /// Sent on every call, after the call's own: a cloud's per-client
-        /// headers, as gcp.zig's `x-goog-user-project`.
+        /// Sent on every call, after the call's own and the credential's
+        /// (`TokenProvider.headers`); a header the call or the credential
+        /// names already is not sent again.
         headers: []const transport.Header = &.{},
+        /// Whether the credential's own headers go with its token. Off, as
+        /// gcp.zig's clients offer with `send_quota_project = false`, the
+        /// token still goes; an `unauthenticated` engine sends neither.
+        send_credential_headers: bool = true,
         retry: RetryPolicy = .{},
         request_timeout_ms: u32 = 0,
         diagnostics: ?*Diagnostics = null,
@@ -439,10 +444,21 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             return std.mem.concat(scratch, u8, &.{ self.base_url, path });
         }
 
-        /// The call's headers, then the engine's.
+        /// The call's headers, then the credential's, then the engine's,
+        /// each only where no earlier one has its name: a call that names
+        /// the project it bills sends that one alone, not the credential's
+        /// beside it. The credential's go only where its token goes. The
+        /// transport then holds all of them to the rules any header meets.
         fn allHeaders(self: Self, scratch: Allocator, call_headers: []const transport.Header) Allocator.Error![]const transport.Header {
-            if (self.headers.len == 0) return call_headers;
-            return std.mem.concat(scratch, transport.Header, &.{ call_headers, self.headers });
+            const credential: []const transport.Header = if (self.unauthenticated or !self.send_credential_headers)
+                &.{}
+            else if (self.token_provider) |p| p.headers() else &.{};
+            if (credential.len == 0 and self.headers.len == 0) return call_headers;
+            var all: std.ArrayList(transport.Header) = .empty;
+            try all.appendSlice(scratch, call_headers);
+            try appendNew(scratch, &all, credential);
+            try appendNew(scratch, &all, self.headers);
+            return all.items;
         }
 
         /// The delay a refused response asked for, in its headers or, as the
@@ -550,6 +566,16 @@ pub fn pathOnOrigin(base_url: []const u8, url: []const u8) ?[]const u8 {
     const path = url[base_url.len..];
     if (path.len == 0 or path[0] != '/') return null;
     return path;
+}
+
+/// Appends each of `more` whose name no header in `all` has yet.
+fn appendNew(scratch: Allocator, all: *std.ArrayList(transport.Header), more: []const transport.Header) Allocator.Error!void {
+    for (more) |h| {
+        const taken = for (all.items) |kept| {
+            if (std.ascii.eqlIgnoreCase(kept.name, h.name)) break true;
+        } else false;
+        if (!taken) try all.append(scratch, h);
+    }
 }
 
 /// The path to log: query strings carry page tokens, filters and object

@@ -91,8 +91,9 @@ is a whole one.
   `google.rpc.RetryInfo`), or null. The loop reads the headers' delay
   itself.
 
-Headers a cloud sends on every call, such as gcp.zig's
-`x-goog-user-project`, go in the engine's `headers`.
+Headers a cloud sends on every call go in the engine's `headers`; headers
+that belong to a credential, such as gcp.zig's `x-goog-user-project`, come
+from the token provider's `headers`.
 
 ## Diagnostics
 
@@ -111,6 +112,14 @@ token copied into the caller's arena, valid for the next request, and
 provider's business; `StaticToken` returns one it was given. Its errors
 include `ReauthenticationRequired` (only signing in again fixes it) and
 `CredentialSourceUnavailable` (no metadata service answered).
+
+A credential may also add headers to every request it authorizes (the
+vtable's optional `headers`), as Google's user credentials name the project
+billed for quota in `x-goog-user-project`. The loop sends them only where
+it sends the token, after the call's own headers and before the engine's,
+a header the call names already winning; `send_credential_headers = false`
+leaves them off and keeps the token. The transport holds them to the rules
+any header meets.
 
 ## Time
 

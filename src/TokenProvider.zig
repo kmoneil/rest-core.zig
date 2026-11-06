@@ -52,6 +52,13 @@ pub const VTable = struct {
     /// Drops any cached token, so the next `getToken` fetches a new one.
     /// Services call this after an HTTP 401.
     invalidate: *const fn (ptr: *anyopaque) void,
+    /// Headers this credential adds to each request it authorizes, such as
+    /// the project Google bills a user credential's quota to
+    /// (`x-goog-user-project`), or null: none. They go only where the token
+    /// goes, after the call's own and before the engine's, a call's header
+    /// of the same name winning. Checked when the credential is made, so
+    /// asking cannot fail; valid as long as the provider is.
+    headers: ?*const fn (ptr: *anyopaque) []const transport.Header = null,
 };
 
 pub fn getToken(self: TokenProvider, io: std.Io, arena: Allocator, scopes: []const []const u8) Error![]const u8 {
@@ -60,6 +67,12 @@ pub fn getToken(self: TokenProvider, io: std.Io, arena: Allocator, scopes: []con
 
 pub fn invalidate(self: TokenProvider) void {
     self.vtable.invalidate(self.ptr);
+}
+
+/// The headers this credential adds to each request it authorizes, or none.
+pub fn headers(self: TokenProvider) []const transport.Header {
+    const f = self.vtable.headers orelse return &.{};
+    return f(self.ptr);
 }
 
 /// Whether `token` can go into an HTTP header: non-empty, visible ASCII.
