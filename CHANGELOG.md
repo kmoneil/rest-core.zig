@@ -65,9 +65,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   the server's control bytes.
 - `rsa`, from gcp.zig: PKCS#1 v1.5 and PSS signatures from a digest, PEM
   private keys (PKCS#8 and PKCS#1) parsed without allocating, and public
-  keys as SubjectPublicKeyInfo. Its header no longer calls the signing
-  path constant-time: on Zig 0.17.1 it is not, in ReleaseFast and
-  ReleaseSafe (Codeberg ziglang/zig#37023).
+  keys as SubjectPublicKeyInfo. On Zig 0.17.1 std.crypto.ff's
+  exponentiation branches on its exponent in ReleaseFast and ReleaseSafe
+  (Codeberg ziglang/zig#37023), so signing blinds it: each signature raises
+  to `d + k * phi(n)` for a fresh random `k`. Breaking against gcp.zig:
+  `sign`, `signDigest` and `signPss` take an `Io` (for `k`) after the key;
+  a key keeps its totient, checked against its modulus when parsed; and
+  `wipe` zeroes the private exponent and the totient.
 - `testing.FakeTransport` (answers from a script, records every request)
   and `testing.FaultTransport` (wraps a transport and injects faults), from
   gcp.zig. A recorded streamed body's checksum is `body_crc32`, std's

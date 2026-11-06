@@ -5,7 +5,7 @@
 src/loop.zig	Engine.execute	20	38	57	4	2	2
 src/loop.zig	Engine.stream	30	61	76	5	3	3
 src/rsa.zig	PublicKey.fromSpki	27	24	28	1	1	1
-src/rsa.zig	parsePkcs1	19	18	28	1	1	1
+src/rsa.zig	parsePkcs1	19	18	21	1	1	1
 src/timestamp.zig	parse	25	30	47	3	1	1
 src/transport.zig	Dechunker.stream	13	19	16	3	3	3
 src/transport.zig	mapError	20	13	55	3	2	2

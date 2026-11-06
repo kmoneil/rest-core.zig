@@ -11,9 +11,12 @@
 //! The modular exponentiation is `std.crypto.ff`. Its secret-exponent path
 //! is written branch-free, but on Zig 0.17.1 LLVM compiles its selects into
 //! branches on the exponent in ReleaseFast and ReleaseSafe (Codeberg
-//! ziglang/zig#37023, fixed for 0.18 and not before), so in those builds
-//! signing's time depends on the key: test/security/CATALOG.md, RSA-01.
-//! gcp.zig's copy called the path constant-time.
+//! ziglang/zig#37023, fixed for 0.18 and not before). So signing blinds its
+//! exponent: each signature raises to `d + k * phi(n)` for a fresh random
+//! `k`, the same signature by another exponent every time, and the branches'
+//! timing cannot be averaged over signatures to learn `d`
+//! (test/security/CATALOG.md, RSA-01). Signing takes an `Io` for that
+//! randomness. gcp.zig's copy called the path constant-time.
 //!
 //! Every signature is checked against the public exponent before it is
 //! returned, so a corrupted key, or a fault while signing, fails here,
@@ -109,36 +112,49 @@ pub const PrivateKey = struct {
     /// The private exponent, big-endian. Secret: `deinit` wipes it.
     d: [max_modulus_bytes]u8,
     d_len: usize,
+    /// phi(n) = (p - 1)(q - 1), big-endian, which signing adds a random
+    /// multiple of to `d` (see `privateOp`). As secret as `d`: knowing it
+    /// factors the modulus. `deinit` wipes it.
+    phi: [max_modulus_bytes]u8,
+    phi_len: usize,
     /// The modulus in bytes, which is also every signature's length.
     len: usize,
 
     pub fn deinit(key: *PrivateKey) void {
-        std.crypto.secureZero(u8, &key.d);
+        key.wipe();
         key.* = undefined;
+    }
+
+    /// Zeroes the secrets, `d` and `phi`; `deinit` does this first.
+    pub fn wipe(key: *PrivateKey) void {
+        std.crypto.secureZero(u8, &key.d);
+        std.crypto.secureZero(u8, &key.phi);
+        key.d_len = 0;
+        key.phi_len = 0;
     }
 
     /// Signs `msg` with RSASSA-PKCS1-v1_5 and SHA-256. Writes `key.len`
     /// bytes into `out` and returns them.
-    pub fn sign(key: *const PrivateKey, msg: []const u8, out: []u8) SignError![]const u8 {
+    pub fn sign(key: *const PrivateKey, io: std.Io, msg: []const u8, out: []u8) SignError![]const u8 {
         var digest: [Sha256.digest_length]u8 = undefined;
         Sha256.hash(msg, &digest, .{});
-        return key.signDigest(.sha256, &digest, out);
+        return key.signDigest(io, .sha256, &digest, out);
     }
 
     /// Signs a digest made with `hash` with RSASSA-PKCS1-v1_5. Writes
     /// `key.len` bytes into `out` and returns them.
-    pub fn signDigest(key: *const PrivateKey, hash: Hash, digest: []const u8, out: []u8) SignError![]const u8 {
+    pub fn signDigest(key: *const PrivateKey, io: std.Io, hash: Hash, digest: []const u8, out: []u8) SignError![]const u8 {
         std.debug.assert(digest.len == hash.digestLength());
         var em_buf: [max_modulus_bytes]u8 = undefined;
         const em = encodePkcs1(hash, digest, em_buf[0..key.len]);
-        return key.privateOp(em, out);
+        return key.privateOp(io, em, out);
     }
 
     /// Signs a digest made with `hash` with RSASSA-PSS, MGF1 over the same
     /// hash and `salt` as the salt, which a caller draws at random, as long
     /// as the digest for the scheme Cloud KMS uses. Writes `key.len` bytes
     /// into `out` and returns them.
-    pub fn signPss(key: *const PrivateKey, hash: Hash, digest: []const u8, salt: []const u8, out: []u8) SignError![]const u8 {
+    pub fn signPss(key: *const PrivateKey, io: std.Io, hash: Hash, digest: []const u8, salt: []const u8, out: []u8) SignError![]const u8 {
         std.debug.assert(digest.len == hash.digestLength());
         const em_bits = key.n.bits() - 1;
         var em_buf: [max_modulus_bytes]u8 = undefined;
@@ -146,7 +162,7 @@ pub const PrivateKey = struct {
         switch (hash) {
             inline else => |t| encodePss(t.Type(), digest, salt, em_bits, em) catch return error.SignatureFailed,
         }
-        return key.privateOp(em, out);
+        return key.privateOp(io, em, out);
     }
 
     /// The key's public half.
@@ -156,13 +172,26 @@ pub const PrivateKey = struct {
 
     /// `em`, an encoded message below the modulus, to the private exponent,
     /// checked against the public one.
-    fn privateOp(key: *const PrivateKey, em: []const u8, out: []u8) SignError![]const u8 {
+    ///
+    /// The exponent is blinded: `d + k * phi(n)` for a fresh random 64-bit
+    /// `k`, which gives the same signature, since `m^phi(n) = 1 mod n` for
+    /// the residues that matter. On Zig 0.17.1 std.crypto.ff's exponentiation
+    /// branches on its exponent in ReleaseFast and ReleaseSafe (Codeberg
+    /// ziglang/zig#37023); blinded, the exponent it branches on is a
+    /// different number every signature, so its timing cannot be averaged
+    /// over many signatures to learn `d`.
+    fn privateOp(key: *const PrivateKey, io: std.Io, em: []const u8, out: []u8) SignError![]const u8 {
         const k = key.len;
         std.debug.assert(out.len >= k);
         // Every encoding starts with a zero byte or is a byte shorter than
         // the modulus, so it is always below it.
         const m = Fe.fromBytes(key.n, em, .big) catch return error.SignatureFailed;
-        const s = key.n.powWithEncodedExponent(m, key.d[0..key.d_len], .big) catch return error.SignatureFailed;
+        var blind: [8]u8 = undefined;
+        io.random(&blind);
+        var exponent_buf: [max_blinded_bytes]u8 = undefined;
+        defer std.crypto.secureZero(u8, &exponent_buf);
+        const exponent = blindedExponent(key.d[0..key.d_len], key.phi[0..key.phi_len], std.mem.readInt(u64, &blind, .little), &exponent_buf);
+        const s = key.n.powWithEncodedExponent(m, exponent, .big) catch return error.SignatureFailed;
         s.toBytes(out[0..k], .big) catch return error.SignatureFailed;
         const check = key.n.powPublic(s, key.e) catch return error.SignatureFailed;
         if (!check.eql(m)) return error.SignatureFailed;
@@ -484,16 +513,112 @@ fn parsePkcs1(bytes: []const u8) ParseError!PrivateKey {
     const e = Fe.fromBytes(n, e_bytes, .big) catch return error.InvalidPrivateKey;
     if (!e.isOdd()) return error.InvalidPrivateKey;
     if (d_bytes.len == 0 or d_bytes.len > max_modulus_bytes) return error.InvalidPrivateKey;
+    return keyOf(n, e, d_bytes, n_bytes, seq.body, &p);
+}
 
+/// The key from its parts, and the two primes that follow `d` in `body` at
+/// `pos`, which give the totient signing blinds its exponent with.
+fn keyOf(n: Modulus, e: Fe, d_bytes: []const u8, n_bytes: []const u8, body: []const u8, pos: *usize) ParseError!PrivateKey {
+    const p_int = readElement(body, pos) orelse return error.InvalidPrivateKey;
+    const q_int = readElement(body, pos) orelse return error.InvalidPrivateKey;
+    const p_bytes = magnitude(p_int) orelse return error.InvalidPrivateKey;
+    const q_bytes = magnitude(q_int) orelse return error.InvalidPrivateKey;
     var key: PrivateKey = .{
         .n = n,
         .e = e,
         .d = @splat(0),
         .d_len = d_bytes.len,
+        .phi = @splat(0),
+        .phi_len = 0,
         .len = (n.bits() + 7) / 8,
     };
     @memcpy(key.d[0..d_bytes.len], d_bytes);
+    key.phi_len = (try totient(n_bytes, p_bytes, q_bytes, &key.phi)).len;
     return key;
+}
+
+/// The longest blinded exponent: `d + k * phi` for a 64-bit `k`.
+const max_blinded_bytes = max_modulus_bytes + 9;
+
+/// `d + k * phi`, big-endian, in `out`: an exponent equal to `d` modulo
+/// `phi`, so it signs alike, whose bits change with every `k`. Byte by byte,
+/// with no branch on a byte's value.
+fn blindedExponent(d: []const u8, phi: []const u8, k: u64, out: *[max_blinded_bytes]u8) []const u8 {
+    const w = @max(d.len, phi.len) + 9;
+    const e = out[0..w];
+    var carry: u128 = 0;
+    for (0..w) |i| {
+        const byte: u128 = if (i < phi.len) phi[phi.len - 1 - i] else 0;
+        const acc = byte * k + carry;
+        e[w - 1 - i] = @truncate(acc);
+        carry = acc >> 8;
+    }
+    var c: u16 = 0;
+    for (0..w) |i| {
+        const byte: u16 = if (i < d.len) d[d.len - 1 - i] else 0;
+        const sum = @as(u16, e[w - 1 - i]) + byte + c;
+        e[w - 1 - i] = @truncate(sum);
+        c = sum >> 8;
+    }
+    return e;
+}
+
+/// phi(n) = (p - 1)(q - 1), into `out`, once `p` and `q` are shown to
+/// multiply to `n`: a key whose primes are not its modulus's is refused.
+fn totient(n: []const u8, p: []const u8, q: []const u8, out: *[max_modulus_bytes]u8) ParseError![]const u8 {
+    if (p.len == 0 or q.len == 0 or p.len > max_modulus_bytes or q.len > max_modulus_bytes) return error.InvalidPrivateKey;
+    var product: [2 * max_modulus_bytes]u8 = undefined;
+    defer std.crypto.secureZero(u8, &product);
+    const pq = mulBytes(p, q, &product);
+    if (!std.mem.eql(u8, trimZeros(pq), trimZeros(n))) return error.InvalidPrivateKey;
+    var p1: [max_modulus_bytes]u8 = undefined;
+    var q1: [max_modulus_bytes]u8 = undefined;
+    defer std.crypto.secureZero(u8, &p1);
+    defer std.crypto.secureZero(u8, &q1);
+    const phi = trimZeros(mulBytes(minusOne(p, &p1), minusOne(q, &q1), &product));
+    if (phi.len > max_modulus_bytes) return error.InvalidPrivateKey;
+    @memcpy(out[0..phi.len], phi);
+    return out[0..phi.len];
+}
+
+/// `a * b` of big-endian magnitudes, schoolbook, in `out`, which holds
+/// `a.len + b.len` bytes.
+fn mulBytes(a: []const u8, b: []const u8, out: []u8) []const u8 {
+    const n = a.len + b.len;
+    std.debug.assert(out.len >= n);
+    var columns: [2 * max_modulus_bytes]u64 = @splat(0);
+    for (0..a.len) |i| {
+        const x: u64 = a[a.len - 1 - i];
+        for (0..b.len) |j| columns[i + j] += x * b[b.len - 1 - j];
+    }
+    var carry: u64 = 0;
+    for (0..n) |i| {
+        const v = columns[i] + carry;
+        out[n - 1 - i] = @truncate(v);
+        carry = v >> 8;
+    }
+    return out[0..n];
+}
+
+/// `x - 1` for a big-endian magnitude above zero, in `out`.
+fn minusOne(x: []const u8, out: *[max_modulus_bytes]u8) []const u8 {
+    @memcpy(out[0..x.len], x);
+    var i = x.len;
+    while (i > 0) {
+        i -= 1;
+        if (out[i] != 0) {
+            out[i] -= 1;
+            break;
+        }
+        out[i] = 0xff;
+    }
+    return out[0..x.len];
+}
+
+fn trimZeros(x: []const u8) []const u8 {
+    var i: usize = 0;
+    while (i < x.len and x[i] == 0) i += 1;
+    return x[i..];
 }
 
 /// RFC 8017 9.2, EMSA-PKCS1-v1_5:
@@ -711,7 +836,7 @@ fn expectSignature(pem: []const u8, expected_hex: []const u8) !void {
     const want = try std.fmt.hexToBytes(&expected, expected_hex);
     try testing.expectEqual(want.len, key.len);
     var out: [max_modulus_bytes]u8 = undefined;
-    const got = try key.sign(test_message, &out);
+    const got = try key.sign(testing.io, test_message, &out);
     try testing.expectEqualSlices(u8, want, got);
 }
 
@@ -731,13 +856,44 @@ test "rsa: a 4096-bit key signs exactly as OpenSSL does" {
     try expectSignature(test_key_4096, test_sig_4096_hex);
 }
 
+test "rsa: a blinded exponent changes with its blind and signs the same" {
+    var key = try parsePem(test_key_2048);
+    defer key.deinit();
+    var a: [max_blinded_bytes]u8 = undefined;
+    var b: [max_blinded_bytes]u8 = undefined;
+    const d = key.d[0..key.d_len];
+    const phi = key.phi[0..key.phi_len];
+    const ea = blindedExponent(d, phi, 1, &a);
+    const eb = blindedExponent(d, phi, 0xdead_beef_0bad_f00d, &b);
+    try testing.expect(!std.mem.eql(u8, trimZeros(ea), trimZeros(eb)));
+    // A blind of 0 leaves d itself.
+    var z: [max_blinded_bytes]u8 = undefined;
+    try testing.expectEqualSlices(u8, d, trimZeros(blindedExponent(d, phi, 0, &z)));
+    // Both sign what d alone signs, which OpenSSL's vector pins.
+    const m = try Fe.fromBytes(key.n, "a message below the modulus", .big);
+    const want = try key.n.powWithEncodedExponent(m, d, .big);
+    try testing.expect((try key.n.powWithEncodedExponent(m, ea, .big)).eql(want));
+    try testing.expect((try key.n.powWithEncodedExponent(m, eb, .big)).eql(want));
+}
+
+test "rsa: the totient is (p - 1)(q - 1), and wipe zeroes it with d" {
+    var key = try parsePem(test_key_2048);
+    // e * d = 1 mod phi(n): with phi wrong, no OpenSSL vector would match,
+    // and this test says where to look first.
+    try testing.expect(key.phi_len >= key.len - 1 and key.phi_len <= key.len);
+    key.wipe();
+    try testing.expect(std.mem.allEqual(u8, &key.d, 0));
+    try testing.expect(std.mem.allEqual(u8, &key.phi, 0));
+    try testing.expectEqual(0, key.d_len);
+}
+
 test "rsa: signing is deterministic, and messages differ" {
     var key = try parsePem(test_key_2048);
     defer key.deinit();
     var a: [max_modulus_bytes]u8 = undefined;
     var b: [max_modulus_bytes]u8 = undefined;
-    try testing.expectEqualSlices(u8, try key.sign("m", &a), try key.sign("m", &b));
-    try testing.expect(!std.mem.eql(u8, try key.sign("m", &a), try key.sign("n", &b)));
+    try testing.expectEqualSlices(u8, try key.sign(testing.io, "m", &a), try key.sign(testing.io, "m", &b));
+    try testing.expect(!std.mem.eql(u8, try key.sign(testing.io, "m", &a), try key.sign(testing.io, "n", &b)));
 }
 
 test "rsa: what cannot be a usable key is refused by kind" {
@@ -776,7 +932,7 @@ test "rsa: PKCS#1 v1.5 over SHA-512 signs as OpenSSL does, and both verify" {
     var out: [max_modulus_bytes]u8 = undefined;
     var want_buf: [max_modulus_bytes]u8 = undefined;
     const want = try hexBytes(test_sig_2048_sha512_hex, &want_buf);
-    try testing.expectEqualSlices(u8, want, try key.signDigest(.sha512, digest, &out));
+    try testing.expectEqualSlices(u8, want, try key.signDigest(testing.io, .sha512, digest, &out));
     const pk = key.publicKey();
     try pk.verifyPkcs1(.sha512, digest, want);
     // OpenSSL's SHA-256 signature too, by the digest.
@@ -813,7 +969,7 @@ test "rsa: PSS verifies OpenSSL's signature, and std verifies ours" {
         const salt: [pair[0].digestLength()]u8 = @splat(0x5a);
         const d = pair[0].digest(test_message, &digest_buf);
         var out: [max_modulus_bytes]u8 = undefined;
-        const sig = try key.signPss(pair[0], d, &salt, &out);
+        const sig = try key.signPss(testing.io, pair[0], d, &salt, &out);
         try pk.verifyPss(pair[0], d, sig);
         // std's PSS verifier, an independent implementation, takes it.
         const parsed = try std_rsa.PublicKey.parseDer(try rsaKeyOf(spki, &der_buf));
@@ -821,7 +977,7 @@ test "rsa: PSS verifies OpenSSL's signature, and std verifies ours" {
         try std_rsa.PSSSignature.verify(256, sig[0..256], test_message, std_key, pair[1]);
         // A PKCS#1 signature is refused as PSS, and a PSS one as PKCS#1.
         var p1: [max_modulus_bytes]u8 = undefined;
-        try testing.expectError(error.SignatureInvalid, pk.verifyPss(pair[0], d, try key.signDigest(pair[0], d, &p1)));
+        try testing.expectError(error.SignatureInvalid, pk.verifyPss(pair[0], d, try key.signDigest(testing.io, pair[0], d, &p1)));
         try testing.expectError(error.SignatureInvalid, pk.verifyPkcs1(pair[0], d, sig));
     }
 }
@@ -860,11 +1016,11 @@ test "rsa: a modulus of 8k + 1 bits, whose PSS encoding is a byte short" {
     const d = Hash.sha256.digest(test_message, &digest_buf);
     var out: [max_modulus_bytes]u8 = undefined;
     const salt: [32]u8 = @splat(1);
-    const sig = try key.signPss(.sha256, d, &salt, &out);
+    const sig = try key.signPss(testing.io, .sha256, d, &salt, &out);
     try testing.expectEqual(257, sig.len);
     try pk.verifyPss(.sha256, d, sig);
     var p1: [max_modulus_bytes]u8 = undefined;
-    try pk.verifyPkcs1(.sha256, d, try key.signDigest(.sha256, d, &p1));
+    try pk.verifyPkcs1(.sha256, d, try key.signDigest(testing.io, .sha256, d, &p1));
 }
 
 test "rsa: the 3072-bit key signs both ways, and a salt too long for the modulus is refused" {
@@ -875,11 +1031,11 @@ test "rsa: the 3072-bit key signs both ways, and a salt too long for the modulus
     var digest_buf: [64]u8 = undefined;
     const d = Hash.sha256.digest(test_message, &digest_buf);
     var out: [max_modulus_bytes]u8 = undefined;
-    try pk.verifyPkcs1(.sha256, d, try key.signDigest(.sha256, d, &out));
+    try pk.verifyPkcs1(.sha256, d, try key.signDigest(testing.io, .sha256, d, &out));
     const salt: [32]u8 = @splat(7);
-    try pk.verifyPss(.sha256, d, try key.signPss(.sha256, d, &salt, &out));
+    try pk.verifyPss(.sha256, d, try key.signPss(testing.io, .sha256, d, &salt, &out));
     const long_salt: [384]u8 = @splat(0);
-    try testing.expectError(error.SignatureFailed, key.signPss(.sha256, d, &long_salt, &out));
+    try testing.expectError(error.SignatureFailed, key.signPss(testing.io, .sha256, d, &long_salt, &out));
 }
 
 test "rsa: public keys as SubjectPublicKeyInfo, written as OpenSSL writes them and read back" {
