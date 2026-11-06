@@ -57,7 +57,7 @@ fix made in either can be carried to the other.
 | src/CountingWriter.zig | src/core/CountingWriter.zig | eae944c |
 | src/query.zig | src/core/query.zig | eae944c |
 | src/logging.zig | src/core/logging.zig | eae944c |
-| src/testing.zig | src/core/testing.zig (the helpers that need no transport) | eae944c |
+| src/testing.zig | src/core/testing.zig (less FakeSigner and retryInfoBody) | eae944c |
 | src/timestamp.zig | src/core/timestamp.zig | eae944c |
 | src/http_date.zig | src/core/retry_after.zig (its HTTP-date parser and tests) | eae944c |
 | src/transport.zig | src/core/transport.zig | eae944c |
@@ -85,6 +85,7 @@ renames two errors, `RefreshTokenInvalid` to `ReauthenticationRequired`
 and `MetadataUnavailable` to `CredentialSourceUnavailable`; its
 `isValidToken` is the transport's `isValidBearerToken`, which the
 transport now holds every bearer token to. testing.zig gained
-`FakeTokenProvider`, without `quota_project`.
+`FakeTokenProvider`, without `quota_project`, and then `FakeTransport` and
+`FaultTransport`, whose `body_crc32c` became `body_crc32`, std's CRC-32.
 
 tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.

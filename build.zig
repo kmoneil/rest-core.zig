@@ -51,6 +51,13 @@ pub fn build(b: *std.Build) void {
         .use_llvm = if (fuzz_runner) true else null,
     });
     unit_step.dependOn(&b.addRunArtifact(security_tests).step);
+    // The examples README.md shows, each a test, so none can rot.
+    unit_step.dependOn(&b.addRunArtifact(b.addTest(.{
+        .name = "examples",
+        .root_module = examplesModule(b, target, optimize, mod),
+        .filters = test_filters,
+        .test_runner = test_runner,
+    })).step);
 
     // The same tests with the library built ReleaseSafe and ReleaseFast. A
     // consumer builds this library in the mode it ships, and in ReleaseFast
@@ -101,7 +108,7 @@ pub fn build(b: *std.Build) void {
     // `zig build test` runs it, so no change is tested without it. Add
     // examples/ here when it exists. It skips zig-pkg and hidden directories
     // by itself.
-    const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "test", "tools" });
+    const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "test", "tools", "examples" });
     lint.setCwd(b.path("."));
     b.step("lint", "Report code that compiles but is wrong (zigvet, from the PATH)").dependOn(&lint.step);
     test_step.dependOn(&lint.step);
@@ -118,7 +125,7 @@ pub fn build(b: *std.Build) void {
     b.step("complexity", "Fail a function newly over its complexity limit (gnarl, from the PATH)").dependOn(&complexity.step);
     test_step.dependOn(&complexity.step);
 
-    const fmt_paths: []const std.Build.LazyPath = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("test"), b.path("tools") };
+    const fmt_paths: []const std.Build.LazyPath = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("test"), b.path("tools"), b.path("examples") };
     test_step.dependOn(&b.addFmt(.{ .paths = fmt_paths, .check = true }).step);
     b.step("fmt", "Format the Zig in build.zig, src/, test/ and tools/").dependOn(&b.addFmt(.{ .paths = fmt_paths }).step);
 
@@ -132,6 +139,16 @@ pub fn build(b: *std.Build) void {
 fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, mod: *std.Build.Module) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("test/security/security_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "rest_core", .module = mod }},
+    });
+}
+
+/// The examples' module, over `rest_core` built as `mod` is.
+fn examplesModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, mod: *std.Build.Module) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("examples/testing_with_fakes.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "rest_core", .module = mod }},

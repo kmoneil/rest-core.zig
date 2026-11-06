@@ -45,6 +45,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   refuses a bearer token that is not non-empty visible ASCII
   (`error.InvalidRequestHeader`), since std would write CR and LF in one
   into the request.
+- `testing.FakeTransport` (answers from a script, records every request)
+  and `testing.FaultTransport` (wraps a transport and injects faults), from
+  gcp.zig. A recorded streamed body's checksum is `body_crc32`, std's
+  CRC-32, where gcp.zig's was `body_crc32c`. examples/testing_with_fakes.zig
+  shows them, and `zig build test` runs it.
 - `testing.ScriptedServer`: a loopback server that answers with scripted
   bytes and records what it was sent.
 - A security catalog, test/security/CATALOG.md: every known attack on an
