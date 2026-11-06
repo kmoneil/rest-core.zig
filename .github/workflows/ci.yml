@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
+# A newer push to a pull request supersedes its older runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every job name here is meant to be a required status check on main;
+# renaming one means updating the branch protection in the same change.
+#
+# setup-zig is given no version: it installs build.zig.zon's
+# minimum_zig_version, so the pin lives in one place. zigvet and gnarl are
+# released binaries, not packages, each pinned by digest in
+# .github/actions/vet-tools; gnarl's release is complexity.zon's `.gnarl`.
+jobs:
+  check:
+    name: format, docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: zig fmt
+        run: zig fmt --check build.zig build.zig.zon src test tools examples
+      - name: API documentation
+        run: zig build docs
+
+  # The unit, property and fuzz-corpus tests, the security suite and its
+  # catalog, the examples and the docs check, zigvet and gnarl: all of
+  # `zig build test`, on every platform. The transport's tests run real
+  # sockets on loopback.
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - uses: ./.github/actions/vet-tools
+      - name: zig build test
+        run: zig build test --summary all
+
+  # A package that depends on this one builds it in the mode it ships, and
+  # in ReleaseFast `unreachable`, overflow and a bad cast are undefined
+  # rather than a panic.
+  release-modes:
+    name: test-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - name: zig build test-release
+        run: zig build test-release --summary all

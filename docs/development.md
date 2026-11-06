@@ -29,6 +29,19 @@ std's runner carried unchanged. A ported file joins `complexity.zon`'s hot
 list in the change that ports it, and a baselined function it brings comes
 with its gcp.zig numbers.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs, on every push to main and every pull
+request: `zig fmt --check` and the API docs; `zig build test` on Linux,
+macOS and Windows, which runs zigvet, gnarl, the security catalog and the
+docs check too; and `zig build test-release` on Linux. zigvet and gnarl
+come from `.github/actions/vet-tools`, each binary checked against a digest
+written there: zigvet's release is pinned in the action, gnarl's is
+`complexity.zon`'s `.gnarl`. To move to a new release, change the version,
+add its digests from that release's `SHA256SUMS`, and for gnarl run
+`gnarl --update-baseline .` with it. `zig build provenance` does not run in
+CI, since it needs the sibling checkouts.
+
 ## The security catalog
 
 [test/security/CATALOG.md](../test/security/CATALOG.md) lists every known
