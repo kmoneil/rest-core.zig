@@ -45,9 +45,9 @@ hands a client `testing.FakeTransport` instead.
   Content-Length or Transfer-Encoding on the answer describes the body a
   GET would get, and none is read, so a blob's size is its
   `header("content-length")`. A refusal is headers alone too, as Blob
-  Storage's `x-ms-error-code`. Through the loop, send a HEAD with
-  `executeStream`, whose result keeps the headers; `execute` returns only
-  the body, which for a HEAD is empty.
+  Storage's `x-ms-error-code`. Through the loop, `Call.head_out` (or
+  `executeStream`'s result) has the headers; `execute` returns only the
+  body, which for a HEAD is empty.
 - **Redirects** are never followed: a 3xx comes back to the caller, and the
   token stays with its host. **Proxies** are never used.
 
@@ -56,9 +56,9 @@ hands a client `testing.FakeTransport` instead.
 `Engine(log_scope, Cloud)` is the loop every module of a cloud runs. A
 client fills in an engine (allocator, `Io`, transport, base URL, the scope
 to ask tokens for, the token provider, retry policy, time limit,
-`Diagnostics`) and calls `execute` with a `Call` (method, path, body,
-headers), `executeStream` with a `StreamCall`, or `executeDiscard` when the
-body is not needed. Each call:
+`Diagnostics`) and calls `execute` with a `Call` (method, path, body and
+its content type, headers), `executeStream` with a `StreamCall`, or
+`executeDiscard` when the body is not needed. Each call:
 
 1. gets a token from the provider, and refuses one that cannot go in a
    header;
@@ -79,8 +79,12 @@ A call that must not be repeated once it may have reached the server, as a
 create, passes `retryable = loop.unsentOnly`. `retry_window_ms` bounds how
 late a retry may begin; `wipe` wipes the call's memory, the token included,
 when it returns; `error_body_out` keeps a refused body for a caller that
-reads more of it than `Diagnostics` does. The loop logs the method, the
-path without its query, the status and the time, never a token.
+reads more of it than `Diagnostics` does; `head_out` hands out each
+attempt's status and headers, a success's too, as a long-running write's
+202 and the `Location` or `Azure-AsyncOperation` it names (null when the
+latest attempt got no response, and from `executeDiscard`). The loop logs
+the method, the path without its query, the status and the time, never a
+token.
 
 A URL a server gives (a next page, an upload session, an operation to
 poll) is followed through `loop.pathOnOrigin(engine.base_url, url)`, which
