@@ -37,6 +37,10 @@ pub const retry_after = @import("retry_after.zig");
 /// caller that shows a write before making it.
 pub const PreparedRequest = @import("PreparedRequest.zig");
 
+/// RSA with a private key held here: PKCS#1 v1.5 and PSS signatures from a
+/// digest, and public keys read and written as SubjectPublicKeyInfo.
+pub const rsa = @import("rsa.zig");
+
 /// Base64, as JSON APIs carry bytes fields.
 pub const base64 = @import("base64.zig");
 
@@ -84,6 +88,7 @@ test {
     _ = @import("query.zig");
     _ = @import("retry.zig");
     _ = @import("retry_after.zig");
+    _ = @import("rsa.zig");
     _ = @import("testing.zig");
     _ = @import("timestamp.zig");
     _ = @import("transport.zig");

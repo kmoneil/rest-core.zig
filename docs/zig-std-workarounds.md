@@ -70,5 +70,6 @@ last group was found while porting it. Each was checked against Zig
   ziglang/zig#35294). The transport never asks for proxies.
 - `std.crypto.ff`'s constant-time selects compile to branches on the
   secret exponent in ReleaseFast and ReleaseSafe on x86_64 (Codeberg
-  ziglang/zig#37023, fixed for 0.18 only). This concerns RSA signing, which
-  is not ported yet.
+  ziglang/zig#37023, fixed for 0.18 only), so `rsa`'s signing time depends
+  on the key in those builds. Not yet worked around: the defence is still
+  to be chosen (test/security/CATALOG.md, RSA-01).

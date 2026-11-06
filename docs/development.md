@@ -79,6 +79,7 @@ file's first line, and its row below, to the source's new commit.
 | src/loop.zig, src/loop_test.zig | src/core/rpc.zig | eae944c |
 | src/Diagnostics.zig | src/core/errors.zig (its Diagnostics and truncateUtf8) | eae944c |
 | src/PreparedRequest.zig | src/core/PreparedRequest.zig | eae944c |
+| src/rsa.zig | src/core/rsa.zig | eae944c |
 
 Changed on the way: base64's and logging's headers no longer assume
 Google; query.zig gained `isDotSegment`, `hasDotSegment` and the checked

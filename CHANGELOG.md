@@ -63,6 +63,11 @@ Until 1.0, minor versions may break the API; each entry says how.
 - `Diagnostics`: status, the cloud's `code` (gcp.zig's `status`), the
   message, a request id, the server's delay, and `format`, which escapes
   the server's control bytes.
+- `rsa`, from gcp.zig: PKCS#1 v1.5 and PSS signatures from a digest, PEM
+  private keys (PKCS#8 and PKCS#1) parsed without allocating, and public
+  keys as SubjectPublicKeyInfo. Its header no longer calls the signing
+  path constant-time: on Zig 0.17.1 it is not, in ReleaseFast and
+  ReleaseSafe (Codeberg ziglang/zig#37023).
 - `testing.FakeTransport` (answers from a script, records every request)
   and `testing.FaultTransport` (wraps a transport and injects faults), from
   gcp.zig. A recorded streamed body's checksum is `body_crc32`, std's
