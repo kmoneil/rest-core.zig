@@ -17,6 +17,13 @@ pub const transport = @import("transport.zig");
 pub const TokenProvider = @import("TokenProvider.zig");
 pub const StaticToken = @import("StaticToken.zig");
 
+pub const RetryPolicy = @import("retry.zig").RetryPolicy;
+pub const isRetryable = @import("retry.zig").isRetryable;
+
+/// A refused response's own retry delay: `Retry-After`, `retry-after-ms`
+/// and `x-ms-retry-after-ms`, read into milliseconds.
+pub const retry_after = @import("retry_after.zig");
+
 /// Base64, as JSON APIs carry bytes fields.
 pub const base64 = @import("base64.zig");
 
@@ -59,6 +66,8 @@ test {
     _ = @import("logging.zig");
     _ = @import("owned.zig");
     _ = @import("query.zig");
+    _ = @import("retry.zig");
+    _ = @import("retry_after.zig");
     _ = @import("testing.zig");
     _ = @import("timestamp.zig");
     _ = @import("transport.zig");

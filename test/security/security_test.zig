@@ -19,6 +19,7 @@ test "rest_core as a dependency: its logging is captured in a consumer's test bu
 test {
     _ = @import("rest_core");
     _ = @import("requests_test.zig");
+    _ = @import("retry_test.zig");
     _ = @import("secrets_test.zig");
     _ = @import("time_test.zig");
     _ = @import("transport_test.zig");

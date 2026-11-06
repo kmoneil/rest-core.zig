@@ -63,6 +63,8 @@ fix made in either can be carried to the other.
 | src/transport.zig | src/core/transport.zig | eae944c |
 | src/TokenProvider.zig | src/core/TokenProvider.zig | eae944c |
 | src/StaticToken.zig | src/core/StaticToken.zig | eae944c |
+| src/retry.zig | src/core/retry.zig | eae944c |
+| src/retry_after.zig | src/core/retry_after.zig (its header readers and tests) | eae944c |
 
 Changed on the way: base64's and logging's headers no longer assume
 Google; query.zig gained `isDotSegment`, `hasDotSegment` and the checked
@@ -87,5 +89,11 @@ and `MetadataUnavailable` to `CredentialSourceUnavailable`; its
 transport now holds every bearer token to. testing.zig gained
 `FakeTokenProvider`, without `quota_project`, and then `FakeTransport` and
 `FaultTransport`, whose `body_crc32c` became `body_crc32`, std's CRC-32.
+retry.zig's `isRetryable` covers the transport's failures only; the
+statuses gcp.zig retries (RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE,
+DEADLINE_EXCEEDED) are its hook's. retry_after.zig reads only headers,
+`x-ms-retry-after-ms` added: `serverDelayMs` takes no body or arena, the
+`google.rpc.RetryInfo` delay and its `durationMs` stay Google's, and
+`Asked` lost its `retry_info` form.
 
 tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.

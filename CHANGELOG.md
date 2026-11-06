@@ -50,6 +50,12 @@ Until 1.0, minor versions may break the API; each entry says how.
   gcp.zig. A recorded streamed body's checksum is `body_crc32`, std's
   CRC-32, where gcp.zig's was `body_crc32c`. examples/testing_with_fakes.zig
   shows them, and `zig build test` runs it.
+- `RetryPolicy`, `isRetryable` and `retry_after`, from gcp.zig. Unlike
+  gcp.zig's, `isRetryable` covers only the transport's failures, a
+  server's statuses being each cloud's to judge; `retry_after` reads
+  `x-ms-retry-after-ms` too, and only headers: `serverDelayMs(headers,
+  received_at)` takes no body, since a delay in one (Google's `RetryInfo`)
+  is the cloud's to read. `retry_after.larger` joins the two.
 - `testing.ScriptedServer`: a loopback server that answers with scripted
   bytes and records what it was sent.
 - A security catalog, test/security/CATALOG.md: every known attack on an

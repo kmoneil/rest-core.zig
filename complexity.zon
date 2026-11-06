@@ -19,6 +19,8 @@
         "src/CountingWriter.zig",
         "src/http_date.zig",
         "src/query.zig",
+        "src/retry.zig",
+        "src/retry_after.zig",
         "src/timestamp.zig",
         "src/TokenProvider.zig",
         "src/transport.zig",
