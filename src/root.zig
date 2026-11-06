@@ -33,6 +33,10 @@ pub const isRetryable = @import("retry.zig").isRetryable;
 /// and `x-ms-retry-after-ms`, read into milliseconds.
 pub const retry_after = @import("retry_after.zig");
 
+/// A request as a client would send it, built without sending it, for a
+/// caller that shows a write before making it.
+pub const PreparedRequest = @import("PreparedRequest.zig");
+
 /// Base64, as JSON APIs carry bytes fields.
 pub const base64 = @import("base64.zig");
 
@@ -67,6 +71,7 @@ test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("CountingWriter.zig");
     _ = @import("Diagnostics.zig");
+    _ = @import("PreparedRequest.zig");
     _ = @import("loop.zig");
     _ = @import("StaticToken.zig");
     _ = @import("TokenProvider.zig");

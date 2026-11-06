@@ -58,6 +58,8 @@ Until 1.0, minor versions may break the API; each entry says how.
   `error.InvalidEndpoint`, a hook reads at most 64 KiB of a refused body,
   and `loop.pathOnOrigin` follows a server's URL only on the engine's
   origin.
+- `PreparedRequest.fromCall`, from gcp.zig: what a `loop.Call` would send,
+  method, URL and body, for a preview; it refuses a path the loop refuses.
 - `Diagnostics`: status, the cloud's `code` (gcp.zig's `status`), the
   message, a request id, the server's delay, and `format`, which escapes
   the server's control bytes.

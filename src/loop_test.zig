@@ -243,6 +243,25 @@ fn Harness(comptime E: type) type {
 
 const H = Harness(GoogleEngine);
 
+test "PreparedRequest.fromCall names what execute sends, byte for byte, and no token" {
+    const PreparedRequest = @import("PreparedRequest.zig");
+    var h: H = undefined;
+    h.init(&.{ok});
+    defer h.deinit();
+    const call: Call = .{ .method = .POST, .path = "/v1/things/1:run?x=%2F", .body = "{\"a\":\"\\u00e9\"}" };
+    const e = h.engine();
+    e.begin();
+    _ = try e.execute(&h.arena, call);
+    const prepared = try PreparedRequest.fromCall(h.arena.allocator(), e.base_url, call);
+    const sent = try h.fake.request(0);
+    try testing.expectEqual(sent.method, prepared.method);
+    try testing.expectEqualStrings(sent.url, prepared.url);
+    try testing.expectEqualStrings(sent.body.?, prepared.body);
+    // The request carried a token; the preview has nowhere to hold one.
+    try testing.expect(sent.bearer != null);
+    try testing.expectEqual(3, @typeInfo(PreparedRequest).@"struct".field_names.len);
+}
+
 test "unsentOnly: a refused connection and a failed lookup, nothing after a send" {
     try testing.expect(loop.unsentOnly(error.ConnectionRefused, 0));
     try testing.expect(loop.unsentOnly(error.NameServerFailure, 0));

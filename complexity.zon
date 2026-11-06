@@ -19,6 +19,7 @@
         "src/CountingWriter.zig",
         "src/http_date.zig",
         "src/loop.zig",
+        "src/PreparedRequest.zig",
         "src/query.zig",
         "src/retry.zig",
         "src/retry_after.zig",
