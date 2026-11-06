@@ -115,6 +115,27 @@ pub fn build(b: *std.Build) void {
     run_provenance.addPassthruArgs();
     b.step("provenance", "List what each ported file's source changed since its recorded commit (needs the sibling checkouts)").dependOn(&run_provenance.step);
 
+    // tools/doc_examples.zig: each example README.md and docs/ show equals
+    // its file in examples/, every example is shown and run, and every
+    // relative link resolves. It reads files the build does not track, so
+    // it always runs. `zig build doc-examples -- --fix` rewrites the
+    // documents' copies from the files.
+    const doc_examples = b.addExecutable(.{ .name = "doc-examples", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/doc_examples.zig"),
+        .target = b.graph.host,
+        .optimize = .safe,
+    }) });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = doc_examples.root_module, .test_runner = test_runner })).step);
+    const check_docs = b.addRunArtifact(doc_examples);
+    check_docs.setCwd(b.path("."));
+    check_docs.has_side_effects = true;
+    test_step.dependOn(&check_docs.step);
+    const fix_docs = b.addRunArtifact(doc_examples);
+    fix_docs.setCwd(b.path("."));
+    fix_docs.has_side_effects = true;
+    fix_docs.addPassthruArgs();
+    b.step("doc-examples", "Check the examples and links in README.md and docs/ (-- --fix: rewrite the examples from their files)").dependOn(&fix_docs.step);
+
     const security_step = b.step("security", "Run the security suite and check its catalog (test/security)");
     security_step.dependOn(&b.addRunArtifact(security_tests).step);
     security_step.dependOn(&check_catalog.step);
@@ -164,7 +185,7 @@ fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
 /// The examples' module, over `rest_core` built as `mod` is.
 fn examplesModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, mod: *std.Build.Module) *std.Build.Module {
     return b.createModule(.{
-        .root_source_file = b.path("examples/testing_with_fakes.zig"),
+        .root_source_file = b.path("examples/all.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{.{ .name = "rest_core", .module = mod }},

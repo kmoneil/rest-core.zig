@@ -16,6 +16,8 @@ zig build docs                          # the API reference, into zig-out/docs
 zig build lint                          # zigvet: code that compiles but is wrong
 zig build complexity                    # gnarl --check: complexity against complexity.baseline
 zig build security                      # the security suite, and its catalog checked against it
+zig build doc-examples                  # the docs' examples against examples/, and their links (-- --fix rewrites the copies)
+zig build provenance                    # what each ported file's source changed since its commit
 ```
 
 `lint` and `complexity` run programs from the PATH (CONTRIBUTING.md says
@@ -117,4 +119,6 @@ refuses a path that does not start with `/`, bounds the body a hook reads,
 and adds `pathOnOrigin`. Diagnostics.zig is errors.zig's with `status`
 named `code`, a request id, and `format`, which escapes control bytes.
 
-tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.
+tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig, and
+tools/doc_examples.zig from yaml.zig too (aad9a5e), with a check of the
+documents' relative links added.

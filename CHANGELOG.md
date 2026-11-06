@@ -76,6 +76,10 @@ Until 1.0, minor versions may break the API; each entry says how.
   is the cloud's to read. `retry_after.larger` joins the two.
 - `testing.ScriptedServer`: a loopback server that answers with scripted
   bytes and records what it was sent.
+- The README, docs/essentials.md and three examples (the transport, a
+  cloud's hook driving the loop, and testing with the fakes), each run by
+  `zig build test`, which also holds the documents' copies of them to the
+  files and checks every relative link.
 - A security catalog, test/security/CATALOG.md: every known attack on an
   HTTP and REST client, each with its defence and the work that will
   prove it, checked against the tests by `zig build test`. SECURITY.md
