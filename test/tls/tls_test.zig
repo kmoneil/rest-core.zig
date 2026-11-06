@@ -43,7 +43,8 @@ fn freePort(io: Io) !u16 {
 }
 
 /// `openssl s_server` in `dir`, serving each file there as a whole raw HTTP
-/// response (`-HTTP`): `GET /ok.txt` answers ok.txt's bytes.
+/// response (`-HTTP`): `GET /ok.txt` answers ok.txt's bytes. It sends
+/// records of 512 bytes at most, so a head of a few KiB spans many.
 const Server = struct {
     child: std.process.Child,
     port: u16,
@@ -52,7 +53,7 @@ const Server = struct {
         const port = try freePort(io);
         var port_text: [8]u8 = undefined;
         const child = try std.process.spawn(io, .{
-            .argv = &.{ "openssl", "s_server", "-accept", try std.fmt.bufPrint(&port_text, "{d}", .{port}), "-cert", "server.pem", "-key", "server.key", "-HTTP", "-quiet" },
+            .argv = &.{ "openssl", "s_server", "-accept", try std.fmt.bufPrint(&port_text, "{d}", .{port}), "-cert", "server.pem", "-key", "server.key", "-HTTP", "-quiet", "-max_send_frag", "512" },
             .cwd = .{ .dir = dir },
             .stdin = .ignore,
             .stdout = .ignore,
@@ -98,6 +99,16 @@ fn getTrusted(io: Io, dir: Io.Dir, arena: std.mem.Allocator, url: []const u8) !r
 
 const ok_reply = "HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok";
 
+/// A 200 whose head has one header line of `n` bytes, then the body "ok".
+fn longHeadReply(n: usize) ![]u8 {
+    var reply: std.ArrayList(u8) = .empty;
+    errdefer reply.deinit(testing.allocator);
+    try reply.appendSlice(testing.allocator, "HTTP/1.0 200 OK\r\nX-Long: ");
+    try reply.appendNTimes(testing.allocator, 'a', n);
+    try reply.appendSlice(testing.allocator, "\r\nContent-Length: 2\r\n\r\nok");
+    return reply.toOwnedSlice(testing.allocator);
+}
+
 test "security: CWE-295 https takes a certificate only from a root it trusts, and only for its host" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
@@ -131,31 +142,30 @@ test "security: CWE-295 https takes a certificate only from a root it trusts, an
     }
 }
 
-test "security: CWE-617 a head line longer than a TLS record is read or refused, never a crash" {
+test "security: CWE-617 a head across many TLS records is read, and one past std's 8 KiB refused, never a crash" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     try makeCertificates(io, tmp.dir);
-    // One header line of 20,000 bytes: past a 16 KiB TLS record, which made
-    // std's TLS reader assert in ekur's client (its FETCH-08).
-    var reply: std.ArrayList(u8) = .empty;
-    defer reply.deinit(testing.allocator);
-    try reply.appendSlice(testing.allocator, "HTTP/1.0 200 OK\r\nX-Long: ");
-    try reply.appendNTimes(testing.allocator, 'a', 20_000);
-    try reply.appendSlice(testing.allocator, "\r\nContent-Length: 2\r\n\r\nok");
-    try tmp.dir.writeFile(io, .{ .sub_path = "long.txt", .data = reply.items });
-    try tmp.dir.writeFile(io, .{ .sub_path = "ok.txt", .data = ok_reply });
+    // A head read past a 16 KiB TLS record made std's TLS reader assert in
+    // ekur's client, which read heads of up to 64 KiB (its FETCH-08). std's
+    // own head limit, `read_buffer_size`, is 8 KiB, under a record.
+    const near = try longHeadReply(7_000);
+    defer testing.allocator.free(near);
+    const long = try longHeadReply(20_000);
+    defer testing.allocator.free(long);
+    try tmp.dir.writeFile(io, .{ .sub_path = "near.txt", .data = near });
+    try tmp.dir.writeFile(io, .{ .sub_path = "long.txt", .data = long });
     var server: Server = try .start(io, tmp.dir);
     defer server.stop(io);
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var buf: [128]u8 = undefined;
-    // Up first, then the long head.
-    _ = try getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/ok.txt"));
-    if (getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/long.txt"))) |res| {
-        try testing.expectEqualStrings("ok", res.body);
-    } else |err| {
-        // A head too long for the read buffer is refused, cleanly.
-        try testing.expectEqual(error.HttpProtocolError, err);
-    }
+
+    // Under the limit, in fourteen records or so: read whole.
+    const res = try getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/near.txt"));
+    try testing.expectEqual(200, res.status);
+    try testing.expectEqualStrings("ok", res.body);
+    // Past a record and the limit: refused, cleanly.
+    try testing.expectError(error.HttpProtocolError, getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/long.txt")));
 }
