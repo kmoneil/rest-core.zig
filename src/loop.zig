@@ -639,11 +639,80 @@ fn hookBody(body: []const u8) []const u8 {
 /// operation to poll) through the loop: the loop sends a path only to its
 /// own base URL, so the bearer token cannot go where a server points it.
 /// Null when `url` names another scheme, host or port, or adds userinfo.
+/// Origins compare as RFC 3986 6.2.3 normalizes them: the scheme and host
+/// without regard to case, and the port as a number, the scheme's default
+/// when none is written. So `https://h:443/x` is on `https://h`'s origin,
+/// as Azure's Retail Prices API writes its next pages. An empty port
+/// (`https://h:/x`) is refused, as std.Uri refuses it.
 pub fn pathOnOrigin(base_url: []const u8, url: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, url, base_url)) return null;
-    const path = url[base_url.len..];
+    const base = Origin.split(base_url) orelse return null;
+    const other = Origin.split(url) orelse return null;
+    if (!base.same(other)) return null;
+    // A path the base URL holds after its origin goes before every call's.
+    if (!std.mem.startsWith(u8, other.rest, base.rest)) return null;
+    const path = other.rest[base.rest.len..];
     if (path.len == 0 or path[0] != '/') return null;
     return path;
+}
+
+/// A URL's origin, as `pathOnOrigin` compares it, and what follows it.
+const Origin = struct {
+    scheme: []const u8,
+    host: []const u8,
+    /// As written, or the scheme's default; 0 for a scheme with none.
+    port: u16,
+    /// The path, query and fragment.
+    rest: []const u8,
+
+    /// Null for a URL with no `scheme://` or no host, with userinfo (an
+    /// `@`, which would let `https://h@evil.example` pass for `h`), or with
+    /// a port that is not a number that fits.
+    fn split(url: []const u8) ?Origin {
+        const sep = std.mem.indexOf(u8, url, "://") orelse return null;
+        const scheme = url[0..sep];
+        const after = url[sep + 3 ..];
+        const end = std.mem.indexOfAny(u8, after, "/?#") orelse after.len;
+        const authority = after[0..end];
+        if (std.mem.indexOfScalar(u8, authority, '@') != null) return null;
+        const host_end = hostEnd(authority) orelse return null;
+        if (host_end == 0) return null;
+        return .{
+            .scheme = scheme,
+            .host = authority[0..host_end],
+            .port = portAfterHost(scheme, authority[host_end..]) orelse return null,
+            .rest = after[end..],
+        };
+    }
+
+    fn same(a: Origin, b: Origin) bool {
+        return a.port == b.port and std.ascii.eqlIgnoreCase(a.scheme, b.scheme) and std.ascii.eqlIgnoreCase(a.host, b.host);
+    }
+};
+
+/// Where an authority's host ends: after an IPv6 literal's `]`, else at its
+/// last `:`. Null for a `[` never closed.
+fn hostEnd(authority: []const u8) ?usize {
+    if (std.mem.startsWith(u8, authority, "[")) {
+        const close = std.mem.indexOfScalar(u8, authority, ']') orelse return null;
+        return close + 1;
+    }
+    return std.mem.lastIndexOfScalar(u8, authority, ':') orelse authority.len;
+}
+
+/// The port `text`, what follows the host, names: `:443` is 443, and none
+/// the scheme's default. Null for anything else, an empty `:` included.
+fn portAfterHost(scheme: []const u8, text: []const u8) ?u16 {
+    if (text.len == 0) return defaultPort(scheme);
+    if (text.len == 1 or text[0] != ':') return null;
+    const digits = text[1..];
+    for (digits) |c| if (!std.ascii.isDigit(c)) return null;
+    return std.fmt.parseInt(u16, digits, 10) catch null;
+}
+
+fn defaultPort(scheme: []const u8) u16 {
+    if (std.ascii.eqlIgnoreCase(scheme, "https")) return 443;
+    if (std.ascii.eqlIgnoreCase(scheme, "http")) return 80;
+    return 0;
 }
 
 /// Appends each of `more` whose name no header in `all` has yet.

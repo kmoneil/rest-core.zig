@@ -2,6 +2,16 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
+## Unreleased
+
+- Fixed: `loop.pathOnOrigin` compared bytes, so a URL with its scheme's
+  default port written out (`https://prices.azure.com:443/...`, as
+  Azure's Retail Prices API writes every next page) or a host in another
+  case was refused as another origin, and a list followed through the
+  loop stopped at its first page. It compares origins now, as RFC 3986
+  6.2.3 normalizes them; userinfo, another port and an empty port are
+  still refused, and the reading agrees with std.Uri's.
+
 ## 0.2.0 (2026-11-06)
 
 From the trials azure.zig and gcp.zig ran on 0.1.0. One break, the HEAD

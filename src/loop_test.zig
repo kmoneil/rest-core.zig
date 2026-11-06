@@ -687,9 +687,95 @@ test "pathOnOrigin: a server's URL is followed only on the engine's own origin" 
         "https://evil.example/https://management.azure.com/subscriptions",
         "https://management.azure.com",
         "/subscriptions",
+        "https://management.azure.com:80/subscriptions",
+        "https://management.azure.com:443@evil.example/subscriptions",
+        "https://management.azure.com:443.evil.example/subscriptions",
+        "https://management.azure.com:4430/subscriptions",
+        "https://management.azure.com:+443/subscriptions",
+        "https://management.azure.com:65979/subscriptions",
+        "https://management.azure.com:443:443/subscriptions",
+        "https://management.azure.com:/subscriptions",
+        "https://management.azure.com?subscriptions",
+        "https://[::1/subscriptions",
+        "https:///subscriptions",
     }) |url| {
         try testing.expectEqual(null, loop.pathOnOrigin(base, url));
     }
+}
+
+test "pathOnOrigin: an explicit default port and a host in another case are the same origin" {
+    // As Azure's Retail Prices API writes every NextPageLink.
+    const prices = "https://prices.azure.com";
+    try testing.expectEqualStrings(
+        "/api/retail/prices?api-version=2023-01-01-preview&$skip=1000",
+        loop.pathOnOrigin(prices, "https://prices.azure.com:443/api/retail/prices?api-version=2023-01-01-preview&$skip=1000").?,
+    );
+    try testing.expectEqualStrings("/x", loop.pathOnOrigin(prices, "https://Prices.Azure.COM/x").?);
+    try testing.expectEqualStrings("/x", loop.pathOnOrigin(prices, "HTTPS://prices.azure.com/x").?);
+    try testing.expectEqualStrings("/x", loop.pathOnOrigin(prices, "https://prices.azure.com:0443/x").?);
+    // And the other way: a base URL that writes its default port.
+    try testing.expectEqualStrings("/x", loop.pathOnOrigin("https://prices.azure.com:443", "https://prices.azure.com/x").?);
+    // An emulator's base: an IPv6 literal and a port of its own.
+    try testing.expectEqualStrings("/v1/x", loop.pathOnOrigin("http://[::1]:8085", "http://[::1]:8085/v1/x").?);
+    try testing.expectEqual(null, loop.pathOnOrigin("http://[::1]:8085", "http://[::1]/v1/x"));
+    try testing.expectEqual(null, loop.pathOnOrigin("http://localhost:8080", "http://localhost/v1/x"));
+    // A base URL with a path still prefixes it, as callUrl does.
+    try testing.expectEqualStrings("/x", loop.pathOnOrigin("https://h.example/v1", "https://h.example:443/v1/x").?);
+    try testing.expectEqual(null, loop.pathOnOrigin("https://h.example/v1", "https://h.example/v2/x"));
+}
+
+test "pathOnOrigin: agrees with std.Uri on every combination of scheme, host, userinfo, port and path" {
+    const base = "https://management.azure.com";
+    const schemes = [_][]const u8{ "https", "HTTPS", "http" };
+    const hosts = [_][]const u8{ "management.azure.com", "Management.Azure.Com", "evil.example", "management.azure.com.evil.example" };
+    const users = [_][]const u8{ "", "u@", "management.azure.com@" };
+    const ports = [_][]const u8{ "", ":", ":443", ":0443", ":80", ":8443", ":65536", ":44x" };
+    const paths = [_][]const u8{ "", "/", "/subscriptions?x=1", "?q", "#f" };
+    var buf: [128]u8 = undefined;
+    var accepted: usize = 0;
+    for (schemes) |scheme| for (hosts) |host| for (users) |user| for (ports) |port| for (paths) |path| {
+        const url = try std.fmt.bufPrint(&buf, "{s}://{s}{s}{s}{s}", .{ scheme, user, host, port, path });
+        if (try agreesWithUri(base, url, path)) accepted += 1;
+    };
+    // https or HTTPS, either host case, no userinfo, the three spellings of
+    // 443 std.Uri takes, and the two paths that start with '/'.
+    try testing.expectEqual(2 * 2 * 3 * 2, accepted);
+}
+
+/// Whether `pathOnOrigin` and `uriOracle` agree on `url`, failing the test
+/// when they do not; true when both accept it.
+fn agreesWithUri(base: []const u8, url: []const u8, path: []const u8) !bool {
+    const want = uriOracle(base, url, path);
+    const got = loop.pathOnOrigin(base, url);
+    if (want == null) {
+        if (got != null) std.debug.print("accepted {s}\n", .{url});
+        try testing.expectEqual(null, got);
+        return false;
+    }
+    if (got == null) std.debug.print("refused {s}\n", .{url});
+    try testing.expectEqualStrings(want.?, got orelse return error.TestExpectedEqual);
+    return true;
+}
+
+/// What `pathOnOrigin` should return for `url`, built with `path` last, as
+/// std.Uri reads the URL: the path when its scheme and host match the
+/// base's without regard to case, its port is 443 written or not, it has no
+/// userinfo, and the path starts with '/'.
+fn uriOracle(base: []const u8, url: []const u8, path: []const u8) ?[]const u8 {
+    const b = std.Uri.parse(base) catch unreachable;
+    const u = std.Uri.parse(url) catch return null;
+    if (u.user != null or u.password != null) return null;
+    if (!std.ascii.eqlIgnoreCase(u.scheme, b.scheme)) return null;
+    const host = switch (u.host orelse return null) {
+        .raw, .percent_encoded => |h| h,
+    };
+    const base_host = switch (b.host.?) {
+        .raw, .percent_encoded => |h| h,
+    };
+    if (!std.ascii.eqlIgnoreCase(host, base_host)) return null;
+    if ((u.port orelse 443) != 443) return null;
+    if (path.len == 0 or path[0] != '/') return null;
+    return path;
 }
 
 test "a refused body the hook reads is bounded; error_body_out keeps it whole" {
