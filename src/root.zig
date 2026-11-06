@@ -26,6 +26,12 @@ pub const CountingWriter = @import("CountingWriter.zig");
 /// Percent-encoding for request paths, and a query-string builder.
 pub const query = @import("query.zig");
 
+/// RFC 3339 timestamps, as JSON APIs send them.
+pub const timestamp = @import("timestamp.zig");
+
+/// HTTP dates (RFC 9110): read in all three formats, written as IMF-fixdate.
+pub const http_date = @import("http_date.zig");
+
 /// Logging under each module's own scope, captured in test builds.
 pub const logging = @import("logging.zig");
 
@@ -38,8 +44,10 @@ test {
     _ = @import("WipingAllocator.zig");
     _ = @import("base64.zig");
     _ = @import("change.zig");
+    _ = @import("http_date.zig");
     _ = @import("logging.zig");
     _ = @import("owned.zig");
     _ = @import("query.zig");
     _ = @import("testing.zig");
+    _ = @import("timestamp.zig");
 }

@@ -102,7 +102,7 @@ cite a test in src/ where the defence is internal. Status is `covered`,
 
 | ID | Attack | Source | Defense | Test | Status |
 |---|---|---|---|---|---|
-| TIME-01 | Timestamps at the edges: years 0000 and 9999, long fractions, offsets past their limits, a 60th second | CWE-190, CWE-20 | Parsers refuse what does not fit, fuzzed with inputs drawn at the edges | - | later t9 |
+| TIME-01 | Timestamps at the edges: years 0000 and 9999, long fractions, offsets past their limits, a 60th second | CWE-190, CWE-20 | Parsers refuse what does not fit, and whatever they return can be written back: `timestamp.parse` refuses a well-formed instant outside 0001 to 9999 in UTC (the year 0000, or an offset past either end), which gcp.zig's took and its formatter then asserted on; `http_date.parse` refuses the year 0000. Fuzzed with arbitrary text and with every instant in range | test/security/time_test.zig: security: CWE-20 a timestamp at the edges is read exactly or refused, and what is read always writes back ; src/timestamp.zig: fuzz parse: arbitrary text never crashes ; src/http_date.zig: fuzz format: every instant in range writes and reads back to its second | covered |
 
 ## Supply chain
 

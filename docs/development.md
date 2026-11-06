@@ -58,11 +58,17 @@ fix made in either can be carried to the other.
 | src/query.zig | src/core/query.zig | eae944c |
 | src/logging.zig | src/core/logging.zig | eae944c |
 | src/testing.zig | src/core/testing.zig (the helpers that need no transport) | eae944c |
+| src/timestamp.zig | src/core/timestamp.zig | eae944c |
+| src/http_date.zig | src/core/retry_after.zig (its HTTP-date parser and tests) | eae944c |
 
 Changed on the way: base64's and logging's headers no longer assume
 Google; query.zig gained `isDotSegment`, `hasDotSegment` and the checked
 writers, which refuse a dot-segment from input; testing.zig holds only
 ByteGen, `repeat`, `fuzzBytes`, FakeClock, WipeChecker and RefuseOver, the
-fakes arriving with the transport and the token seam.
+fakes arriving with the transport and the token seam. timestamp.zig's
+`parse` refuses a well-formed instant outside 0001 to 9999 in UTC, which
+gcp.zig's returns and its `format` then asserts on. http_date.zig is
+retry_after.zig's HTTP-date parser in a file of its own, with `parse` and
+`format` added.
 
 tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig.

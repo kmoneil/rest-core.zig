@@ -17,7 +17,9 @@
     .hot = .{
         "src/base64.zig",
         "src/CountingWriter.zig",
+        "src/http_date.zig",
         "src/query.zig",
+        "src/timestamp.zig",
     },
     // What only builds or tests: the build, the tools (tools/test_runner.zig
     // is std's runner, carried unchanged), the suites under test/, the

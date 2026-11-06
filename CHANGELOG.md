@@ -16,6 +16,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   `writeCheckedStrictSegment` and `writeCheckedPath`: a resource name or
   path from input that is, or holds, `.` or `..` is `error.DotSegment`
   rather than a request a normalizing server sends to the parent resource.
+- `timestamp`: RFC 3339, from gcp.zig. `parse` refuses a well-formed
+  instant outside 0001 to 9999 in UTC (the year 0000, or an offset that
+  carries the time past either end), so whatever it returns, `format` can
+  write; gcp.zig's took such text, and its `format` then asserted.
+- `http_date`: HTTP dates (RFC 9110 5.6.7), read in all three of its
+  formats and written as IMF-fixdate, for Retry-After, Date and
+  `x-ms-date`.
 - A security catalog, test/security/CATALOG.md: every known attack on an
   HTTP and REST client, each with its defence and the work that will
   prove it, checked against the tests by `zig build test`. SECURITY.md
