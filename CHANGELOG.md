@@ -38,6 +38,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   one. `Transport.sendStream` through a vtable with no `sendStream` (a
   fake that sets `send` only) panics in every mode, where it unwrapped a
   null.
+- Fixed: `Diagnostics.print` could end a message that overflowed its
+  buffer in half a UTF-8 sequence, though `message()` promises a
+  boundary, and formatting a message from `d.message()` aliased the
+  buffer it was writing (a panic in a safe build, undefined in
+  ReleaseFast). It formats apart from the buffer, then cuts and copies.
 
 ## 0.2.1 (2026-11-06)
 

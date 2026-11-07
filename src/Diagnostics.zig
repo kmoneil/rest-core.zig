@@ -99,16 +99,23 @@ pub fn setCorrelationId(d: *Diagnostics, id: []const u8) void {
     d.correlation_id_len = @intCast(r.len);
 }
 
-/// Records a failure that has no HTTP response, with a formatted message.
+/// Records a failure that has no HTTP response, with a formatted message,
+/// truncated to the buffer at a UTF-8 boundary. `args` may point into `d`,
+/// as `d.message()` does.
 pub fn print(d: *Diagnostics, comptime fmt: []const u8, args: anytype) void {
+    // Formatted apart from `d.buffer`, which `args` may point into, with a
+    // byte past its length, to show whether the cut falls in a sequence.
+    var staged: [@sizeOf(@TypeOf(d.buffer)) + 1]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&staged);
+    w.print(fmt, args) catch {}; // Keeps whatever fit.
+    const m = truncateUtf8(w.buffered(), d.buffer.len);
     d.http_status = 0;
     d.retry_after_ms = null;
     d.code_len = 0;
     d.request_id_len = 0;
     d.correlation_id_len = 0;
-    var w: std.Io.Writer = .fixed(&d.buffer);
-    w.print(fmt, args) catch {}; // Keeps whatever fit.
-    d.message_len = @intCast(truncateUtf8(w.buffered(), d.buffer.len).len);
+    @memcpy(d.buffer[0..m.len], m);
+    d.message_len = @intCast(m.len);
 }
 
 /// Writes the failure for a log or a terminal: the status, the code, the
@@ -216,6 +223,22 @@ test "Diagnostics.print formats client-side failures, and clears the code and id
     const long: [600]u8 = @splat('x');
     d.print("{s}", .{&long});
     try testing.expectEqual(d.buffer.len, d.message().len);
+}
+
+test "Diagnostics.print never splits a UTF-8 sequence" {
+    var d: Diagnostics = .{};
+    // "x" and 170 three-byte characters are 511 bytes; the 171st straddles
+    // the end.
+    d.print("x{s}", .{test_util.repeat("€", 171)});
+    try testing.expect(std.unicode.utf8ValidateSlice(d.message()));
+    try testing.expectEqual(511, d.message().len);
+}
+
+test "Diagnostics.print may format the message it holds" {
+    var d: Diagnostics = .{};
+    d.set(403, "", "token expired");
+    d.print("{s} (while impersonating)", .{d.message()});
+    try testing.expectEqualStrings("token expired (while impersonating)", d.message());
 }
 
 test "Diagnostics.format writes the failure on one line, the server's control bytes escaped" {
