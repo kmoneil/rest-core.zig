@@ -1070,8 +1070,11 @@ pub const FakeClock = struct {
         return .{ .userdata = self, .vtable = &vtable };
     }
 
-    /// The recorded sleeps, in milliseconds.
+    /// The recorded sleeps, in milliseconds. A sleep never made, or past
+    /// the 64 kept, panics: read as 0 it would pass a test whose code
+    /// stopped sleeping.
     pub fn sleepMs(self: *const FakeClock, index: usize) i64 {
+        if (index >= @min(self.sleep_count, self.sleeps.len)) @panic("FakeClock: no sleep recorded at that index");
         return @intCast(@divTrunc(self.sleeps[index], std.time.ns_per_ms));
     }
 
@@ -1099,7 +1102,9 @@ pub const FakeClock = struct {
         const ns: i96 = switch (timeout) {
             .none => 0,
             .duration => |d| d.raw.nanoseconds,
-            .deadline => |d| d.raw.nanoseconds - self.now_ns,
+            // One already past returns at once, as a real Io's does; time
+            // never goes back.
+            .deadline => |d| @max(0, d.raw.nanoseconds - self.now_ns),
         };
         if (self.sleep_count < self.sleeps.len) self.sleeps[self.sleep_count] = ns;
         self.sleep_count += 1;
@@ -1290,6 +1295,17 @@ test "FakeClock records sleeps and advances time" {
 
     clock.cancel_sleep = true;
     try std.testing.expectError(error.Canceled, io.sleep(.fromMilliseconds(1), .awake));
+}
+
+test "FakeClock: a deadline already past returns at once, and time never goes back" {
+    // As a real Io does: the sleep is recorded as none, and now stays.
+    var clock: FakeClock = .{ .now_ns = 1_000 * std.time.ns_per_ms };
+    const io = clock.io();
+    const past: std.Io.Clock.Timestamp = .{ .clock = .awake, .raw = .{ .nanoseconds = 400 * std.time.ns_per_ms } };
+    try past.wait(io);
+    try std.testing.expectEqual(1, clock.sleep_count);
+    try std.testing.expectEqual(0, clock.sleepMs(0));
+    try std.testing.expectEqual(1_000 * std.time.ns_per_ms, std.Io.Clock.awake.now(io).nanoseconds);
 }
 
 test "FakeClock random is deterministic or pinned" {

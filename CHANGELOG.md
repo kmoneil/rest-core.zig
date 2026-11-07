@@ -13,6 +13,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   not recorded and does not use a scripted reply. The check is public,
   `transport.checkRequest`, for a `Transport` of one's own. Breaks: a
   test that sent such a request through the fake now gets the error.
+- Fixed: `testing.FakeClock.sleepMs` read a sleep never made from
+  memory never set, so `expectEqual(0, clock.sleepMs(1))` could pass
+  after the code stopped sleeping; it panics now. A deadline already
+  past moved the clock back and recorded a negative sleep; it returns at
+  once and records none, as a real `Io` does.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
