@@ -108,7 +108,7 @@ fn isValidTokenProperty(_: void, input: []const u8) !void {
     for (input) |c| visible = visible and c >= '!' and c <= '~';
     try std.testing.expectEqual(visible, isValidToken(input));
     // So an accepted token can never end the header line or start another.
-    if (isValidToken(input)) try std.testing.expect(std.mem.indexOfAny(u8, input, "\r\n\x00 \t") == null);
+    if (isValidToken(input)) try std.testing.expect(std.mem.findAny(u8, input, "\r\n\x00 \t") == null);
 }
 
 test "fuzz isValidToken: accepts exactly non-empty visible ASCII" {

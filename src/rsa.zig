@@ -441,7 +441,7 @@ pub fn parsePemInto(pem: []const u8, key: *PrivateKey) ParseError!void {
     // A key that held another before this call holds nothing after a
     // failed one.
     errdefer key.wipe();
-    if (std.mem.indexOf(u8, pem, "-----BEGIN ENCRYPTED PRIVATE KEY-----") != null) {
+    if (std.mem.find(u8, pem, "-----BEGIN ENCRYPTED PRIVATE KEY-----") != null) {
         return error.UnsupportedKey;
     }
     const body = pemBody(pem, "PRIVATE KEY") orelse
@@ -464,9 +464,9 @@ pub fn parsePemInto(pem: []const u8, key: *PrivateKey) ParseError!void {
 fn pemBody(pem: []const u8, comptime label: []const u8) ?[]const u8 {
     const begin = "-----BEGIN " ++ label ++ "-----";
     const end = "-----END " ++ label ++ "-----";
-    const start = std.mem.indexOf(u8, pem, begin) orelse return null;
+    const start = std.mem.find(u8, pem, begin) orelse return null;
     const after = start + begin.len;
-    const stop = std.mem.indexOfPos(u8, pem, after, end) orelse return null;
+    const stop = std.mem.findPos(u8, pem, after, end) orelse return null;
     return pem[after..stop];
 }
 
@@ -687,8 +687,8 @@ fn encodePkcs1(hash: Hash, digest: []const u8, em: []u8) []const u8 {
 }
 
 // Test fixtures: throwaway keys generated for these tests with OpenSSL,
-// shared with ServiceAccount's tests (pub, but rsa.zig is not exported).
-// never used anywhere real. The signatures are OpenSSL's own
+// never used anywhere real. Test-only, though pub: rest_core exports rsa,
+// and gcp.zig's and azure.zig's tests sign with these keys. The signatures are OpenSSL's own
 // (`openssl dgst -sha256 -sign`) over `test_message`, so these tests
 // check against an independent implementation.
 

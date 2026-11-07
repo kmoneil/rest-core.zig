@@ -734,7 +734,7 @@ pub fn pathOnOrigin(base_url: []const u8, url: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, other.rest, base.rest)) return null;
     const path = other.rest[base.rest.len..];
     if (path.len == 0 or path[0] != '/') return null;
-    if (hasDotSegment(path[0 .. std.mem.indexOfAny(u8, path, "?#") orelse path.len])) return null;
+    if (hasDotSegment(path[0 .. std.mem.findAny(u8, path, "?#") orelse path.len])) return null;
     return path;
 }
 
@@ -771,12 +771,12 @@ const Origin = struct {
     /// `@`, which would let `https://h@evil.example` pass for `h`), or with
     /// a port that is not a number that fits.
     fn split(url: []const u8) ?Origin {
-        const sep = std.mem.indexOf(u8, url, "://") orelse return null;
+        const sep = std.mem.find(u8, url, "://") orelse return null;
         const scheme = url[0..sep];
         const after = url[sep + 3 ..];
-        const end = std.mem.indexOfAny(u8, after, "/?#") orelse after.len;
+        const end = std.mem.findAny(u8, after, "/?#") orelse after.len;
         const authority = after[0..end];
-        if (std.mem.indexOfScalar(u8, authority, '@') != null) return null;
+        if (std.mem.findScalar(u8, authority, '@') != null) return null;
         const host_end = hostEnd(authority) orelse return null;
         if (host_end == 0) return null;
         return .{
@@ -796,10 +796,10 @@ const Origin = struct {
 /// last `:`. Null for a `[` never closed.
 fn hostEnd(authority: []const u8) ?usize {
     if (std.mem.startsWith(u8, authority, "[")) {
-        const close = std.mem.indexOfScalar(u8, authority, ']') orelse return null;
+        const close = std.mem.findScalar(u8, authority, ']') orelse return null;
         return close + 1;
     }
-    return std.mem.lastIndexOfScalar(u8, authority, ':') orelse authority.len;
+    return std.mem.findScalarLast(u8, authority, ':') orelse authority.len;
 }
 
 /// The port `text`, what follows the host, names: `:443` is 443, and none
@@ -831,7 +831,7 @@ fn appendNew(scratch: Allocator, all: *std.ArrayList(transport.Header), more: []
 /// The path to log: query strings carry page tokens, filters and object
 /// names, so they stay out of it.
 fn logPath(path: []const u8) []const u8 {
-    return path[0 .. std.mem.indexOfScalar(u8, path, '?') orelse path.len];
+    return path[0 .. std.mem.findScalar(u8, path, '?') orelse path.len];
 }
 
 /// What a streaming call sends: the reader's bytes when it has them, else

@@ -90,7 +90,7 @@ pub fn isValidHeaderName(name: []const u8) bool {
     if (name.len == 0) return false;
     for (name) |c| {
         if (std.ascii.isAlphanumeric(c)) continue;
-        if (std.mem.indexOfScalar(u8, "!#$%&'*+-.^_`|~", c) == null) return false;
+        if (std.mem.findScalar(u8, "!#$%&'*+-.^_`|~", c) == null) return false;
     }
     return true;
 }
@@ -636,7 +636,7 @@ pub const HttpTransport = struct {
             .raw => |raw| raw,
             .percent_encoded => |encoded| encoded,
         };
-        if (std.mem.indexOfScalar(u8, host_text, '%') != null) return error.InvalidEndpoint;
+        if (std.mem.findScalar(u8, host_text, '%') != null) return error.InvalidEndpoint;
     }
 
     /// Refuses, before anything is sent, a header HTTP cannot carry, and one
@@ -1172,7 +1172,7 @@ const BodyHash = std.hash.Crc32;
 const ScriptedServer = test_util.ScriptedServer;
 
 fn expectHeader(raw: []const u8, header_line: []const u8) !void {
-    if (std.mem.indexOf(u8, raw, header_line) == null) {
+    if (std.mem.find(u8, raw, header_line) == null) {
         std.debug.print("missing header {s} in request:\n{s}\n", .{ header_line, raw });
         return error.TestExpectedHeader;
     }
@@ -1225,8 +1225,8 @@ test "HttpTransport sends headers and body and reads the response" {
 
     const get = server.request(1);
     try testing.expect(std.mem.startsWith(u8, get, "GET /v1/projects/p/topics/t HTTP/1.1\r\n"));
-    try testing.expect(std.mem.indexOf(u8, get, "authorization") == null);
-    try testing.expect(std.mem.indexOf(u8, get, "content-type") == null);
+    try testing.expect(std.mem.find(u8, get, "authorization") == null);
+    try testing.expect(std.mem.find(u8, get, "content-type") == null);
 }
 
 test "HttpTransport sends a form body with its content type" {
@@ -1393,7 +1393,7 @@ test "HttpTransport sends extra headers, in order, after its own" {
     try expectHeader(get, "Metadata-Flavor: Google\r\n");
     try expectHeader(get, "x-goog-user-project: billing-project\r\n");
     // After the ones the transport writes itself, so neither can be replaced.
-    try testing.expect(std.mem.indexOf(u8, get, "user-agent: t\r\n").? < std.mem.indexOf(u8, get, "Metadata-Flavor").?);
+    try testing.expect(std.mem.find(u8, get, "user-agent: t\r\n").? < std.mem.find(u8, get, "Metadata-Flavor").?);
 }
 
 test "HttpTransport refuses a header that would end the line, before it connects" {
@@ -1439,11 +1439,11 @@ test "header names and values follow RFC 9110" {
 fn headerProperty(_: void, input: []const u8) !void {
     // An accepted header can never end its line or start another one.
     if (isValidHeaderName(input)) {
-        try testing.expect(std.mem.indexOfAny(u8, input, "\r\n\x00 \t:") == null);
+        try testing.expect(std.mem.findAny(u8, input, "\r\n\x00 \t:") == null);
         try testing.expect(input.len > 0);
     }
     if (isValidHeaderValue(input)) {
-        try testing.expect(std.mem.indexOfAny(u8, input, "\r\n\x00") == null);
+        try testing.expect(std.mem.findAny(u8, input, "\r\n\x00") == null);
         if (input.len > 0) try testing.expect(input[0] != ' ' and input[input.len - 1] != ' ');
     }
 }
@@ -1797,8 +1797,8 @@ test "HttpTransport: a HEAD answer ends at its head, whatever its framing says, 
     // A HEAD goes with no body, so with no Content-Length or Content-Type
     // (std writes both names in lower case).
     try testing.expect(std.mem.startsWith(u8, server.request(0), "HEAD /c/b HTTP/1.1\r\n"));
-    try testing.expect(std.mem.indexOf(u8, server.request(0), "content-length:") == null);
-    try testing.expect(std.mem.indexOf(u8, server.request(0), "content-type:") == null);
+    try testing.expect(std.mem.find(u8, server.request(0), "content-length:") == null);
+    try testing.expect(std.mem.find(u8, server.request(0), "content-type:") == null);
     try testing.expect(std.mem.startsWith(u8, server.request(2), "HEAD /c/b HTTP/1.1\r\n"));
 }
 
@@ -2694,7 +2694,7 @@ test "sendStream hands each piece to the writer as it arrives, not when more com
                 self.got.appendSlice(testing.allocator, data[data.len - 1]) catch return error.WriteFailed;
                 n += data[data.len - 1].len;
             }
-            if (std.mem.indexOf(u8, self.got.items, "[{}") != null) self.open.store(true, .release);
+            if (std.mem.find(u8, self.got.items, "[{}") != null) self.open.store(true, .release);
             return n;
         }
     };

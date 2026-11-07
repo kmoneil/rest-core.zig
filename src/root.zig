@@ -78,6 +78,29 @@ pub const logging = @import("logging.zig");
 /// Fakes and property-test helpers, for tests only.
 pub const testing = @import("testing.zig");
 
+/// References every pub declaration, down into the namespaces that hold
+/// them, to `depth`. `std.testing.refAllDecls` is shallow, so a pub fn
+/// inside `HttpTransport`, `query` or `rsa` was compiled only when some
+/// test happened to reach it. Generic functions (`Engine`, `Owned`) are
+/// referenced, not instantiated.
+fn refAllDeclsDeep(comptime T: type, comptime depth: u32) void {
+    inline for (comptime @import("std").meta.declarations(T)) |name| {
+        if (@TypeOf(@field(T, name)) == type) {
+            const Inner = @field(T, name);
+            if (depth > 1) switch (@typeInfo(Inner)) {
+                .@"struct", .@"enum", .@"union", .@"opaque" => refAllDeclsDeep(Inner, depth - 1),
+                else => {},
+            };
+        } else {
+            _ = &@field(T, name);
+        }
+    }
+}
+
+test "every pub declaration compiles, namespaces' too" {
+    refAllDeclsDeep(@This(), 4);
+}
+
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("CountingWriter.zig");
