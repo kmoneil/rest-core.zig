@@ -2,18 +2,24 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
-## Unreleased
+## 0.4.0 (2026-11-07)
 
-- `rsa.parsePemInto(pem, key: *PrivateKey)`: parses into the caller's
-  key, writing its secret parts straight there, never into a copy on the
-  way, and wipes it on any error. `parsePem`, which returns the key by
-  value, can leave a copy in the stack it used (seen in ReleaseFast);
-  it stays, and its doc points here (security catalog SECRET-04).
-- docs/essentials.md: a stalled connect can outlive a request's time
-  limit while the `Io`'s `async_limit` is spent (std's ziglang/zig#37192),
-  and `std.Io.Threaded`'s default is the CPU count less one, none on a
-  one-CPU machine; set `async_limit` when making the `Io` (security
-  catalog CONN-08, now with a test that a cancel holds given room).
+The rest of the audit of 2026-11-06: its p3 fixes and cleanups, a doc
+comment on every public declaration, and two speedups `zig build bench`
+measured. Breaks, each in an entry below: a few calls return another
+error than 0.3.0 did. A public key whose exponent runs past 32 bits is
+`UnsupportedKey`, as a private key's is; a host std will not name is
+`InvalidEndpoint`, where it was `NetworkFailure`, from `FakeTransport`
+too; and a status that is not three digits is `HttpProtocolError`,
+where it was read as a status. gcp.zig's and azure.zig's suites pass
+against it.
+
+- `rsa`: one check holds a public key's and a private key's modulus and
+  exponent to the same rules, where two copies had drifted. A public
+  key (`PublicKey.fromSpki`) whose exponent runs past 32 bits is
+  `UnsupportedKey` now, as a private key's is, where it was
+  `InvalidPublicKey`; and a private key both too big and cut short is
+  `InvalidPrivateKey`, read whole before it is judged.
 - Fixed: a response whose status was not three digits was read as one
   (`HTTP/1.1 1;0 OK` as 210, a success); it is `error.HttpProtocolError`.
   A host std will not name (`http://a_b!.example/`, or an IPv6 literal
@@ -21,23 +27,22 @@ Until 1.0, minor versions may break the API; each entry says how.
   `HttpTransport` and `FakeTransport` alike, where it was
   `NetworkFailure`. A timed request starts its timer before its own
   task, so when the second cannot start, nothing has been sent.
+- `rsa.parsePemInto(pem, key: *PrivateKey)`: parses into the caller's
+  key, writing its secret parts straight there, never into a copy on the
+  way, and wipes it on any error. `parsePem`, which returns the key by
+  value, can leave a copy in the stack it used (seen in ReleaseFast);
+  it stays, and its doc points here (security catalog SECRET-04).
+- `transport.findHeader(headers, name)`: the first header of a name, in
+  any case, which every `header()` here now uses. Their docs said the
+  first wins "as `std.http` does"; std keeps the last of Content-Type,
+  Location and Connection, so the docs say so now. Nothing reads
+  differently.
 - Fixed: after a compressed body, the transport read the whole rest of
   its framing to see whether anything followed, and after one that would
   not decode, to tell a dropped connection from a bad body: a server
   sending endless chunks kept an untimed caller reading. The first needs
   one byte now, and the second stops past `max_response_bytes`, the body
   then `error.HttpProtocolError`.
-- `transport.findHeader(headers, name)`: the first header of a name, in
-  any case, which every `header()` here now uses. Their docs said the
-  first wins "as `std.http` does"; std keeps the last of Content-Type,
-  Location and Connection, so the docs say so now. Nothing reads
-  differently.
-- `rsa`: one check holds a public key's and a private key's modulus and
-  exponent to the same rules, where two copies had drifted. A public
-  key (`PublicKey.fromSpki`) whose exponent runs past 32 bits is
-  `UnsupportedKey` now, as a private key's is, where it was
-  `InvalidPublicKey`; and a private key both too big and cut short is
-  `InvalidPrivateKey`, read whole before it is judged.
 - Fixed: `testing.FaultTransport` recorded an exchange before marking its
   fault fired, so a record that ran out of memory left `fired` false and
   the `after_fault` hook unrun, though the fault took effect. It fires
@@ -45,10 +50,6 @@ Until 1.0, minor versions may break the API; each entry says how.
 - Fixed: `testing.ScriptedServer.url` wrote `127.0.0.1` even for a
   server started on another address (`startOn` with IPv6); it writes the
   address the server is bound to.
-- Docs: every public type says whether it is thread-safe and who frees
-  what it hands out, and every public declaration has a doc comment.
-  `TokenProvider` says a provider shared by several clients must be
-  thread-safe; `ScriptedServer` says how to start, run and stop it.
 - Faster: a compressed body is hashed only with its trailer's own
   checksum (CRC-32 for gzip, Adler-32 for deflate), not both, about
   250 us less per MiB of gzip and 1.7 ms per MiB of deflate; and a
@@ -58,6 +59,15 @@ Until 1.0, minor versions may break the API; each entry says how.
   checked against std's on fuzzed input), about 0.36 ms a MiB where
   std's byte-at-a-time one took 1.86 ms, more than the inflate. Decoding
   a gzip body with its trailer checked costs about half what it did.
+- docs/essentials.md: a stalled connect can outlive a request's time
+  limit while the `Io`'s `async_limit` is spent (std's ziglang/zig#37192),
+  and `std.Io.Threaded`'s default is the CPU count less one, none on a
+  one-CPU machine; set `async_limit` when making the `Io` (security
+  catalog CONN-08, now with a test that a cancel holds given room).
+- Docs: every public type says whether it is thread-safe and who frees
+  what it hands out, and every public declaration has a doc comment.
+  `TokenProvider` says a provider shared by several clients must be
+  thread-safe; `ScriptedServer` says how to start, run and stop it.
 
 ## 0.3.0 (2026-11-07)
 
