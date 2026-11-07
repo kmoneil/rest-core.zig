@@ -179,7 +179,9 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         gpa: Allocator,
         io: std.Io,
         transport: Transport,
-        /// Scheme, host and port, with no trailing slash.
+        /// Scheme, host and port, and a path every call's goes after if
+        /// the service has one (`https://h.example/v1`), with no trailing
+        /// slash.
         base_url: []const u8,
         /// The scope asked of the token provider.
         auth_scope: []const u8,
@@ -693,7 +695,9 @@ fn hookBody(body: []const u8) []const u8 {
 /// without regard to case, and the port as a number, the scheme's default
 /// when none is written. So `https://h:443/x` is on `https://h`'s origin,
 /// as Azure's Retail Prices API writes its next pages. An empty port
-/// (`https://h:/x`) is refused, as std.Uri refuses it.
+/// (`https://h:/x`) is refused, as std.Uri refuses it, and so is a path
+/// with a dot-segment (`..` or `.`, its dots written or `%2e`), which a
+/// normalizing server resolves, `..` out of the base URL's path.
 pub fn pathOnOrigin(base_url: []const u8, url: []const u8) ?[]const u8 {
     const base = Origin.split(base_url) orelse return null;
     const other = Origin.split(url) orelse return null;
@@ -702,7 +706,28 @@ pub fn pathOnOrigin(base_url: []const u8, url: []const u8) ?[]const u8 {
     if (!std.mem.startsWith(u8, other.rest, base.rest)) return null;
     const path = other.rest[base.rest.len..];
     if (path.len == 0 or path[0] != '/') return null;
+    if (hasDotSegment(path[0 .. std.mem.indexOfAny(u8, path, "?#") orelse path.len])) return null;
     return path;
+}
+
+/// Whether a path holds a segment of one or two dots, each written as
+/// itself or percent-encoded, as a normalizing server reads them (RFC
+/// 3986 6.2.2.2).
+fn hasDotSegment(path: []const u8) bool {
+    var segments = std.mem.splitScalar(u8, path, '/');
+    next: while (segments.next()) |segment| {
+        var dots: usize = 0;
+        var i: usize = 0;
+        while (i < segment.len) : (dots += 1) {
+            if (segment[i] == '.') {
+                i += 1;
+            } else if (std.ascii.startsWithIgnoreCase(segment[i..], "%2e")) {
+                i += 3;
+            } else continue :next;
+        }
+        if (dots == 1 or dots == 2) return true;
+    }
+    return false;
 }
 
 /// A URL's origin, as `pathOnOrigin` compares it, and what follows it.

@@ -803,6 +803,26 @@ test "pathOnOrigin: an explicit default port and a host in another case are the 
     try testing.expectEqual(null, loop.pathOnOrigin("https://h.example/v1", "https://h.example/v2/x"));
 }
 
+test "pathOnOrigin: a dot-segment is refused, its dots written or percent-encoded" {
+    // A normalizing server resolves `..`, which climbs out of the base
+    // URL's path: same origin, but a resource the base fenced off.
+    for ([_][]const u8{
+        "https://h.example/v1/../admin",
+        "https://h.example/v1/%2e%2e/admin",
+        "https://h.example/v1/%2E./admin",
+        "https://h.example/v1/.%2E/admin",
+        "https://h.example/v1/..",
+        "https://h.example/v1/./x",
+    }) |url| {
+        try testing.expectEqual(null, loop.pathOnOrigin("https://h.example/v1", url));
+    }
+    try testing.expectEqual(null, loop.pathOnOrigin("https://h.example", "https://h.example/a/../b"));
+    // Dots that are not a whole segment are a name, and a query's dots
+    // are not a path's.
+    try testing.expectEqualStrings("/x..y/.z", loop.pathOnOrigin("https://h.example/v1", "https://h.example/v1/x..y/.z").?);
+    try testing.expectEqualStrings("/x?next=../y", loop.pathOnOrigin("https://h.example/v1", "https://h.example/v1/x?next=../y").?);
+}
+
 test "pathOnOrigin: agrees with std.Uri on every combination of scheme, host, userinfo, port and path" {
     const base = "https://management.azure.com";
     const schemes = [_][]const u8{ "https", "HTTPS", "http" };

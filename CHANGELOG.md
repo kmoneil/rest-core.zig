@@ -77,6 +77,12 @@ Until 1.0, minor versions may break the API; each entry says how.
   PEM key at all; it is `UnsupportedKey`, as `ParseError` says. And
   `base64.decode` kept what it allocated when the text was not base64,
   which leaked under any allocator but an arena; it frees it now.
+- Fixed: `loop.pathOnOrigin` passed a path with a dot-segment, so
+  `https://h.example/v1/../admin` (or `%2e%2e`) under a base of
+  `https://h.example/v1` came back as `/../admin`, which a normalizing
+  server serves outside `/v1`. Such a path, its dots written or encoded,
+  is refused now. `Engine.base_url`'s doc says a path may follow the
+  origin, as the loop has always taken one.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
