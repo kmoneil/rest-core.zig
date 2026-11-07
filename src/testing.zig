@@ -21,6 +21,7 @@ const StreamError = @import("transport.zig").StreamError;
 const ContentType = @import("transport.zig").ContentType;
 const Header = @import("transport.zig").Header;
 const checkRequest = @import("transport.zig").checkRequest;
+const findHeader = @import("transport.zig").findHeader;
 const TokenProvider = @import("TokenProvider.zig");
 
 /// A `TokenProvider` that returns one token, or fails with one error, and
@@ -169,10 +170,9 @@ pub const FakeTransport = struct {
         headers: []Header,
         timeout_ms: u32,
 
-        /// The value sent for `name`, matched as HTTP matches names, or null.
+        /// The value sent for `name`, as `transport.findHeader` finds it.
         pub fn header(self: Recorded, name: []const u8) ?[]const u8 {
-            for (self.headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
-            return null;
+            return findHeader(self.headers, name);
         }
     };
 
@@ -193,10 +193,9 @@ pub const FakeTransport = struct {
         accept_encoding: StreamRequest.AcceptEncoding,
         timeout_ms: u32,
 
-        /// The value sent for `name`, matched as HTTP matches names, or null.
+        /// The value sent for `name`, as `transport.findHeader` finds it.
         pub fn header(self: RecordedStream, name: []const u8) ?[]const u8 {
-            for (self.headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
-            return null;
+            return findHeader(self.headers, name);
         }
     };
 
@@ -534,17 +533,15 @@ pub const FaultTransport = struct {
         /// The plan index of the fault that fired on this exchange.
         fault: ?usize,
 
-        /// The value the request sent for `name`, matched as HTTP matches
-        /// names, or null.
+        /// The value the request sent for `name`, as `transport.findHeader`
+        /// finds it.
         pub fn header(self: Exchange, name: []const u8) ?[]const u8 {
-            for (self.headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
-            return null;
+            return findHeader(self.headers, name);
         }
 
-        /// The value the response sent for `name`, or null.
+        /// The value the response sent for `name`, likewise.
         pub fn responseHeader(self: Exchange, name: []const u8) ?[]const u8 {
-            for (self.response_headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
-            return null;
+            return findHeader(self.response_headers, name);
         }
     };
 
