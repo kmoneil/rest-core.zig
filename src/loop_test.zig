@@ -1198,6 +1198,86 @@ test "content_type: a call's body goes as the type it names, JSON unless it says
     try testing.expectEqual(.json, (try h.fake.request(1)).content_type);
 }
 
+test "Call and StreamCall: a name both have is one field, and one's own is listed" {
+    // The two drifted once: each had a field the other lacked for no reason
+    // the streaming path gives. A field added to one fails to compile here
+    // until the other has it too, or it is listed with why the other has not.
+    comptime {
+        // A slice, against segments that can be sent again; the body's
+        // encoding as an enum, against the header verbatim.
+        const differ = [_][]const u8{ "body", "content_type" };
+        // Where a response goes, and a writer's start over.
+        const stream_only = [_][]const u8{ "sink", "accept_encoding", "restart" };
+        for (@typeInfo(Call).@"struct".field_names) |name| {
+            if (!@hasField(StreamCall, name)) @compileError("Call has " ++ name ++ " and StreamCall has not");
+            if (!listed(&differ, name) and @FieldType(Call, name) != @FieldType(StreamCall, name))
+                @compileError(name ++ " has one type in Call and another in StreamCall");
+        }
+        for (@typeInfo(StreamCall).@"struct".field_names) |name| {
+            if (!@hasField(Call, name) and !listed(&stream_only, name)) @compileError("StreamCall has " ++ name ++ " and Call has not");
+        }
+    }
+}
+
+test "Call.timeout_ms: a buffered call sets its own time limit, 0 none" {
+    var h: H = undefined;
+    h.init(&.{ ok, ok, ok });
+    defer h.deinit();
+    var e = h.engine();
+    e.request_timeout_ms = 30_000;
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things" });
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things", .timeout_ms = 120_000 });
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things", .timeout_ms = 0 });
+    try testing.expectEqual(30_000, (try h.fake.request(0)).timeout_ms);
+    try testing.expectEqual(120_000, (try h.fake.request(1)).timeout_ms);
+    try testing.expectEqual(0, (try h.fake.request(2)).timeout_ms);
+}
+
+test "StreamCall.error_body_out: a refused body, buffered whatever the sink" {
+    var h: H = undefined;
+    h.init(&.{.{ .respond = .{ .status = 404, .body = "{\"error\":{\"status\":\"NOT_FOUND\",\"details\":[1]}}" } }});
+    defer h.deinit();
+    var out_buf: [64]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var body: ?[]const u8 = "stale";
+    try testing.expectError(error.NotFound, h.engine().executeStream(&h.arena, .{
+        .method = .GET,
+        .path = "/v1/o",
+        .sink = .{ .writer = &out },
+        .error_body_out = &body,
+    }));
+    try testing.expectEqualStrings("{\"error\":{\"status\":\"NOT_FOUND\",\"details\":[1]}}", body.?);
+    try testing.expectEqualStrings("", out.buffered());
+}
+
+/// Streams a call with `wipe` as given, its engine's scratch on a buffer,
+/// and reports whether the bearer token is still readable there after.
+fn streamTokenSurvives(wipe: bool) !bool {
+    const token = "ya29.a0-stream-token-0123456789";
+    var h: H = undefined;
+    h.init(&.{ok});
+    defer h.deinit();
+    h.token.token = token;
+    var backing: [64 * 1024]u8 = @splat(0);
+    var fba: std.heap.FixedBufferAllocator = .init(&backing);
+    var e = h.engine();
+    e.gpa = fba.allocator();
+    _ = try e.executeStream(&h.arena, .{ .method = .GET, .path = "/v1/o", .wipe = wipe });
+    try testing.expectEqualStrings(token, (try h.fake.streamRequest(0)).bearer.?);
+    return std.mem.indexOf(u8, &backing, token) != null;
+}
+
+test "StreamCall.wipe: the loop's copy of the token does not outlive the call" {
+    try testing.expect(!try streamTokenSurvives(true));
+    // Without it the copy stays where it was, which makes the check real.
+    try testing.expect(try streamTokenSurvives(false));
+}
+
+fn listed(comptime names: []const []const u8, comptime name: []const u8) bool {
+    for (names) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
 test "executeStream: a buffered sink retries statuses and transport failures alike" {
     var h: H = undefined;
     h.init(&.{ unavailable, .{ .fail = error.ConnectionResetByPeer }, ok });

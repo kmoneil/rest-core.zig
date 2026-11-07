@@ -100,6 +100,10 @@ pub const Call = struct {
     /// always null from `executeDiscard`, which frees the response as it
     /// returns.
     error_body_out: ?*?[]const u8 = null,
+    /// How long one attempt may take, instead of the engine's
+    /// `request_timeout_ms`, for a request that is slow by nature. 0 removes
+    /// the limit.
+    timeout_ms: ?u32 = null,
     /// No retry begins later than this many milliseconds after the first
     /// attempt began, for a call whose repeats are safe only for so long,
     /// as a write the server recognises by an idempotency token is. Null:
@@ -140,12 +144,15 @@ pub const StreamCall = struct {
     /// engine-level retries the head is the latest attempt's, and null when
     /// that attempt got none.
     head_out: ?*?transport.StreamRequest.Head = null,
-    /// How long one attempt may take, instead of the engine's
-    /// `request_timeout_ms`, for a request that is slow by nature. 0 removes
-    /// the limit.
+    /// As `Call.timeout_ms`.
     timeout_ms: ?u32 = null,
     /// As `Call.retry_window_ms`.
     retry_window_ms: ?u32 = null,
+    /// As `Call.wipe`. What a writer sink was handed is the caller's.
+    wipe: bool = false,
+    /// As `Call.error_body_out`: a refused response's body is buffered
+    /// whatever the sink.
+    error_body_out: ?*?[]const u8 = null,
 
     pub const Body = union(enum) {
         none,
@@ -259,12 +266,10 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                     .body = call.body,
                     .content_type = call.content_type,
                     .headers = headers,
-                    .timeout_ms = self.request_timeout_ms,
+                    .timeout_ms = call.timeout_ms orelse self.request_timeout_ms,
                 }, response.allocator());
                 const failed: Failed = if (outcome) |res| f: {
-                    const refused = try self.answered(scratch.allocator(), &attempts, res, started) orelse return res.body;
-                    if (call.error_body_out) |out| out.* = res.body;
-                    break :f refused;
+                    break :f try self.answered(scratch.allocator(), &attempts, res, started) orelse return res.body;
                 } else |err| f: {
                     self.unanswered(&attempts, err, started);
                     break :f .{ .err = err };
@@ -312,7 +317,8 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             call: StreamCall,
             streamed: ?StreamBody,
         ) StreamBodyError!transport.StreamResponse {
-            var scratch: std.heap.ArenaAllocator = .init(self.gpa);
+            var wiping: WipingAllocator = .init(self.gpa);
+            var scratch: std.heap.ArenaAllocator = .init(if (call.wipe) wiping.allocator() else self.gpa);
             defer scratch.deinit();
             const url = try self.callUrl(scratch.allocator(), call.path);
             const headers = try self.allHeaders(scratch.allocator(), call.headers);
@@ -324,6 +330,8 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 .retryable = call.retryable orelse Cloud.retryable,
                 .window_ms = call.retry_window_ms,
                 .first_started = std.Io.Clock.awake.now(self.io),
+                .wipe = call.wipe,
+                .error_body_out = call.error_body_out,
                 .head_out = call.head_out,
                 .restart = call.restart,
             };
@@ -533,6 +541,7 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             // as when reading the delay its body asks for runs out, and no
             // answer to retry on.
             if (err == error.OutOfMemory) return error.OutOfMemory;
+            if (a.error_body_out) |out| out.* = res.body;
             return .{ .err = err, .http_status = res.status, .server_delay = try self.serverDelay(scratch, res) };
         }
 
