@@ -6,8 +6,6 @@ _reviews/
 _reports/
 # Benchmark run history, kept locally (_bench/README.md).
 _bench/
-# What tools/vmrun/vmrun brings back from each run.
-_vmrun/
 # karte export's snapshot of this repo's own board: the board lives in the
 # shared data dir, and a committed copy only goes stale.
 BOARD.md
