@@ -55,9 +55,10 @@ CI, since it needs the sibling checkouts.
 [test/security/CATALOG.md](../test/security/CATALOG.md) lists every known
 attack on an HTTP and REST client, with its source, the defence, the test
 that proves it and a status. `zig build test` runs
-`tools/security_catalog.zig` over it: a covered row whose test is gone, or
-a test named `security: ...` under test/ that no row names, fails the
-build. A change that adds a defence turns its row covered with the
+`tools/security_catalog.zig` over it: a covered row whose test is gone or
+never runs (commented out, or in a file that is no suite's root and that
+nothing beside it imports), or a test named `security: ...` under test/
+that no row names, fails the build. A change that adds a defence turns its row covered with the
 test; one that finds a defence missing adds a `gap` row.
 
 Every test build runs under `tools/test_runner.zig`: Zig 0.17's test
