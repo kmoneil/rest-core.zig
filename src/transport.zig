@@ -366,11 +366,12 @@ pub const HttpTransport = struct {
         // Without a second task there is no timeout to be had. gcp.zig sent
         // the request untimed then, and said nothing; a caller who asked for
         // a limit gets an error instead, and one who wants none passes 0.
-        race.concurrent(.sent, sendNow, .{ self, req, arena }) catch return error.ConcurrencyUnavailable;
-        defer race.cancelDiscard();
-        // The request has started: without its timer it is canceled on the
-        // way out, never left to run unbounded.
+        // The timer starts first, so when the request's task is the one
+        // that cannot start, nothing has been sent: only a sleep is
+        // canceled on the way out.
         race.concurrent(.expired, expire, .{ self.client.io, req.timeout_ms }) catch return error.ConcurrencyUnavailable;
+        defer race.cancelDiscard();
+        race.concurrent(.sent, sendNow, .{ self, req, arena }) catch return error.ConcurrencyUnavailable;
         return switch (race.await() catch |err| return err) {
             .sent => |result| result,
             .expired => error.TimedOut,
@@ -475,6 +476,10 @@ pub const HttpTransport = struct {
         arena: Allocator,
     ) StreamError!StreamResponse {
         const connection = request.connection.?;
+        // std reads the code with wrapping arithmetic, so bytes that are
+        // not digits make a status (`1;0` is 210): refused, as checkFraming
+        // refuses a Content-Length that is not digits.
+        if (!isDigits(head.bytes[9..12])) return error.HttpProtocolError;
         const status: u16 = @backingInt(head.status);
         // The head lives in the connection's read buffer, which reading the
         // body overwrites, so copy the headers out first.
@@ -567,11 +572,18 @@ pub const HttpTransport = struct {
     /// silently drops), and a percent-encoded host, which std sends in Host
     /// as written. A URL comes from the program, but parts of it often come
     /// from input; `query` encodes them.
-    /// `url` parsed and checked, with the protocol it is sent over.
+    /// `url` parsed and checked, with the protocol it is sent over. The
+    /// host must be one std will name (RFC 1123), as `client.request`
+    /// refuses any other, except an IPv6 literal over plain HTTP, which
+    /// the transport connects to itself (`preconnect`).
     fn target(url: []const u8) Error!struct { std.Uri, http.Client.Protocol } {
         const uri = std.Uri.parse(url) catch return error.InvalidEndpoint;
         try checkUrl(url, uri);
         const protocol = http.Client.Protocol.fromUri(uri) orelse return error.InvalidEndpoint;
+        if (ipv6Literal(uri) == null or protocol != .plain) {
+            var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
+            _ = std.Io.net.HostName.fromUri(uri, &host_buf) catch return error.InvalidEndpoint;
+        }
         return .{ uri, protocol };
     }
 
@@ -1062,7 +1074,7 @@ fn mapError(err: anyerror, connection: ?*http.Client.Connection) Error {
         error.CertificateBundleLoadFailure,
         => error.TlsFailure,
 
-        error.UnsupportedUriScheme, error.UriMissingHost => error.InvalidEndpoint,
+        error.UnsupportedUriScheme, error.UriMissingHost, error.InvalidHostName => error.InvalidEndpoint,
 
         // std on Windows returns Unexpected for socket statuses it does not
         // map. Zig 0.16 left a refused connection among them, and 0.17.0 a
@@ -1451,6 +1463,27 @@ test "HttpTransport reports a truncated body as a dropped connection" {
         .url = server.url(&buf, "/v1/projects/p/subscriptions/s:pull"),
         .body = "{}",
     }, arena.allocator()));
+}
+
+test "HttpTransport refuses a status that is not three digits" {
+    // std reads the three bytes with wrapping arithmetic, so "1;0" was
+    // 210 and "abc" 331: garbage became a status, a 2xx among them.
+    const io = testing.io;
+    var server: ScriptedServer = try .start(io, &.{
+        "HTTP/1.1 1;0 OK\r\nContent-Length: 2\r\n\r\n{}",
+        "HTTP/1.1 abc OK\r\nContent-Length: 2\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    });
+    defer server.deinit(io);
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    for (0..2) |_| try testing.expectError(error.HttpProtocolError, ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/a") }, arena.allocator()));
+    try testing.expectEqual(200, (try ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/b") }, arena.allocator())).status);
 }
 
 test "HttpTransport reads chunked bodies and rejects bad chunk framing" {

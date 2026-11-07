@@ -2278,6 +2278,11 @@ test "FakeTransport refuses what HttpTransport refuses, before it records or ans
         .{ .url = "http://user:pw@127.0.0.1:PORT/v1/a", .refused = error.InvalidEndpoint },
         .{ .url = "http://%31%32%37.0.0.1:PORT/v1/a", .refused = error.InvalidEndpoint },
         .{ .url = "ftp://127.0.0.1:PORT/v1/a", .refused = error.InvalidEndpoint },
+        // A host std will not name (RFC 1123), and an IPv6 literal over
+        // TLS, which std names; over plain HTTP the transport connects
+        // to one itself.
+        .{ .url = "http://a_b!.example:PORT/v1/a", .refused = error.InvalidEndpoint },
+        .{ .url = "https://[::1]:PORT/v1/a", .refused = error.InvalidEndpoint },
         .{ .url = local, .headers = &.{.{ .name = "Content-Length", .value = "5" }}, .refused = error.InvalidRequestHeader },
         .{ .url = local, .headers = &.{.{ .name = "Host", .value = "evil.example" }}, .refused = error.InvalidRequestHeader },
         .{ .url = local, .headers = &.{.{ .name = "Accept-Encoding", .value = "gzip" }}, .refused = error.InvalidRequestHeader },
