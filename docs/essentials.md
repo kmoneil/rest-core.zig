@@ -19,7 +19,13 @@ hands a client `testing.FakeTransport` instead.
   `error.ConcurrencyUnavailable`, never sent untimed. One known limit: while
   the `Io`'s `async_limit` is spent, a connect that stalls can outlive the
   time limit, since std's connect loses the cancel then (Codeberg
-  ziglang/zig#37192); give the `Io` async capacity to spare.
+  ziglang/zig#37192), until the OS's TCP connect timeout ends it (about
+  75 s on macOS, about 2 minutes on Linux). `std.Io.Threaded`'s default
+  `async_limit` is the CPU count less one, which is none at all on a
+  one-CPU machine, so set it when you make the `Io`:
+  `std.Io.Threaded.init(gpa, .{ .async_limit = .unlimited })`, or a limit
+  with room for a DNS lookup and a connect per address the host returns
+  (std takes up to 32 at a time) beyond your program's own `async` tasks.
 - **TLS** is std's: the chain checked against the system's roots, the
   name against the host, the dates against the clock, with no option to
   turn any of it off. One known hole, std's: Zig 0.17.1 takes a

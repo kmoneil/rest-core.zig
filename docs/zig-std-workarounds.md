@@ -75,7 +75,12 @@ last group was found while porting it. Each was checked against Zig
   and the next address is tried with none pending. The transport's own
   time-limit race uses `concurrent`, which never runs inline, but a
   stalled connect can still outlive `timeout_ms` while the `Io`'s async
-  capacity is spent. Not worked around: test/security/CATALOG.md, CONN-08.
+  capacity is spent, until the OS's TCP connect timeout ends it.
+  `Io.Threaded`'s default `async_limit` is the CPU count less one (none on
+  a one-CPU machine), so docs/essentials.md tells a client to set it.
+  Connecting around std is not done: `Connection.Tls.create` is private
+  in 0.17.1, so it would mean carrying std's TLS connection setup.
+  Documented, not worked around: test/security/CATALOG.md, CONN-08.
 - `std.http.Client` reads `HTTP_PROXY` and `HTTPS_PROXY` only when asked,
   and HTTPS through its proxies goes in cleartext (Codeberg
   ziglang/zig#35294). The transport never asks for proxies.
