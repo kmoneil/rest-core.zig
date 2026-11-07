@@ -1,0 +1,124 @@
+name: fuzz
+
+# Nightly, and by hand: a short coverage-guided run of every fuzz property,
+# each job carrying its corpus on from the last run. Short on purpose: the
+# nightly keeps every property fuzzed and its corpus fresh; longer
+# campaigns are not run here. Not a required check.
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Run every job at this many iterations, such as 20K or 2M, in place of its own"
+        default: ""
+
+# The workflow reads the repository, and finds the corpus an earlier run
+# kept.
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.job }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per source file, its filters naming that file's fuzz
+        # properties. `--fuzz=N` runs each matching property N times; each
+        # count is about a minute of fuzzing on an Apple M5 Max with an
+        # empty corpus (2026-11-07), so a few on a runner, and the step's
+        # own limit below is the margin as a corpus grows.
+        include:
+          - { job: rsa, filters: "fuzz rsa:", iterations: 400K }
+          - { job: retry, filters: "fuzz waitMs|fuzz backoff", iterations: 3M }
+          - { job: timestamp, filters: "fuzz format: instants|fuzz parse: arbitrary text", iterations: 1500K }
+          - { job: base64, filters: "fuzz base64:", iterations: 400K }
+          - { job: testing, filters: "fuzz ByteGen|fuzz FakeTransport", iterations: 120K }
+          - { job: loop, filters: "fuzz retry: attempts", iterations: 100K }
+          - { job: retry_after, filters: "fuzz Asked|fuzz serverDelayMs", iterations: 3M }
+          - { job: query, filters: "fuzz percent-encoding|fuzz Params", iterations: 110K }
+          - { job: token, filters: "fuzz isValidToken", iterations: 4M }
+          - { job: wiping, filters: "fuzz WipingAllocator", iterations: 2M }
+          - { job: diagnostics, filters: "fuzz truncateUtf8", iterations: 5M }
+          - { job: http_date, filters: "fuzz unixSeconds|fuzz format: every instant", iterations: 2500K }
+          - { job: crc32, filters: "fuzz Crc32", iterations: 2M }
+          - { job: counting, filters: "fuzz CountingWriter", iterations: 500K }
+          - { job: transport, filters: "fuzz headers|fuzz Dechunker", iterations: 170K }
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+
+      # Each run starts from the corpus the earlier runs built up, kept as
+      # an artifact rather than in the cache, which evicts it first. The
+      # newest from this branch or main is the one restored.
+      - name: Restore the fuzz corpus
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: fuzz-corpus-${{ matrix.job }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -o pipefail
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$NAME&per_page=100" --jq '
+            [.artifacts[] | select(.expired | not)
+              | select(.workflow_run.head_branch == env.BRANCH or .workflow_run.head_branch == "main")]
+            | sort_by(.created_at) | last | .id // empty')
+          if [ -z "$id" ]; then
+            echo "No $NAME artifact yet: this run starts from the seed corpus alone"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/corpus.zip"
+          mkdir -p .zig-cache/f
+          unzip -q -o "$RUNNER_TEMP/corpus.zip" -d .zig-cache/f
+          echo "Restored artifact $id: $(find .zig-cache/f -type f | wc -l) files"
+
+      # Its own limit, below the job's, so a fuzzer that stalls still
+      # leaves time to keep what it was on.
+      - name: Coverage-guided fuzzing
+        timeout-minutes: 12
+        env:
+          ITERATIONS: ${{ inputs.iterations || matrix.iterations }}
+          FILTERS: ${{ matrix.filters }}
+          JOB: ${{ matrix.job }}
+        run: |
+          set -o pipefail
+          # A failing input saved by an earlier run is not this run's.
+          rm -f .zig-cache/f/crash
+          # Filters separated by | are each a -Dtest-filter.
+          args=()
+          IFS='|' read -ra parts <<< "$FILTERS"
+          for f in "${parts[@]}"; do args+=("-Dtest-filter=$f"); done
+          zig build test-unit -Dfuzz-runner "${args[@]}" "--fuzz=$ITERATIONS" 2>&1 | tee "$RUNNER_TEMP/fuzz.log"
+          # A property that fails while fuzzed reports the input it saved;
+          # that line, or the input itself, fails the job.
+          if [ -e .zig-cache/f/crash ] || grep -q "input saved to" "$RUNNER_TEMP/fuzz.log"; then
+            echo "::error::a fuzz property failed; its input is attached as fuzz-failure-$JOB"
+            exit 1
+          fi
+
+      # 30 days, so a corpus outlasts a few nights without a run.
+      - name: Save the fuzz corpus
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-corpus-${{ matrix.job }}
+          path: .zig-cache/f
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # `crash` is the failing input: a 4-byte little-endian length, then
+      # the bytes; an in<N> file, the input a stalled fuzzer was on.
+      - name: Keep the failing input
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-failure-${{ matrix.job }}
+          path: |
+            .zig-cache/f/crash
+            .zig-cache/f/in*
+          include-hidden-files: true
+          if-no-files-found: ignore

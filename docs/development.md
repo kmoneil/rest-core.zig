@@ -51,6 +51,16 @@ add its digests from that release's `SHA256SUMS`, and for gnarl run
 `gnarl --update-baseline .` with it. `zig build provenance` does not run in
 CI, since it needs the sibling checkouts.
 
+`.github/workflows/fuzz.yml` fuzzes every `fuzz ...` property nightly,
+and by hand (with an iteration count of your own), one job per source
+file, each `zig build test-unit -Dfuzz-runner --fuzz=N` restoring its
+corpus from the last run's artifact and keeping what it found. It is
+short on purpose, a few minutes a job: it keeps every property fuzzed
+and its corpus fresh, and longer campaigns are not run here. A property
+that fails fails its job, its input kept as an artifact. A new fuzz
+property joins its file's job there, or a new job. It is not a required
+check.
+
 ## The security catalog
 
 [test/security/CATALOG.md](../test/security/CATALOG.md) lists every known
