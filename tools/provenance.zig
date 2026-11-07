@@ -130,6 +130,12 @@ fn checkTree(io: Io, arena: Allocator, root: Io.Dir, dirs: []const []const u8, c
             outcome = worse(outcome, try checkFile(arena, path, source, checkouts, log, ctx, w));
         }
     }
+    // Nothing found is nothing checked, never a pass: a provenance line
+    // the parser stopped reading would otherwise pass every file in silence.
+    if (checked == 0) {
+        try w.print("provenance: no ported file found: nothing was checked\n", .{});
+        return .unchecked;
+    }
     try w.print("provenance: {d} ported files checked: {s}\n", .{ checked, switch (outcome) {
         .unchanged => "none changed at its source since its commit",
         .changed => "some changed at their source; carry the fix, then record the new commit",
@@ -242,4 +248,10 @@ test "nothing changed is a pass; an unknown commit or a repo with no checkout is
     defer std.testing.allocator.free(nowhere[1]);
     try std.testing.expectEqual(.unchecked, nowhere[0]);
     try std.testing.expect(std.mem.indexOf(u8, nowhere[1], "--checkout ekur=DIR") != null);
+
+    // No ported file at all: nothing was checked, which is not a pass.
+    const none = try checkedTree(&.{.{ "src/own.zig", "//! Written here.\n" }}, &quiet, &default_checkouts);
+    defer std.testing.allocator.free(none[1]);
+    try std.testing.expectEqual(.unchecked, none[0]);
+    try std.testing.expect(std.mem.indexOf(u8, none[1], "nothing was checked") != null);
 }

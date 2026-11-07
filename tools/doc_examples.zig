@@ -130,10 +130,38 @@ const Check = struct {
             const rel = try c.arena.print("examples/{s}", .{entry.name});
             if (!c.shown.contains(rel)) c.problem("{s} is not shown in README.md or docs/", .{rel});
             const import = try c.arena.print("@import(\"{s}\")", .{entry.name});
-            if (std.mem.find(u8, all, import) == null) c.problem("{s} is not imported by examples/all.zig, so it never runs", .{rel});
+            if (!holdsLive(all, import)) c.problem("{s} is not imported by examples/all.zig, so it never runs", .{rel});
         }
     }
 };
+
+/// Whether `src` holds `needle` on a line that is not a comment: an
+/// import commented out imports nothing.
+fn holdsLive(src: []const u8, needle: []const u8) bool {
+    var at: usize = 0;
+    while (std.mem.findPos(u8, src, at, needle)) |i| : (at = i + 1) {
+        const start = if (std.mem.findScalarLast(u8, src[0..i], '\n')) |nl| nl + 1 else 0;
+        if (!std.mem.startsWith(u8, std.mem.trimStart(u8, src[start..i], " \t"), "//")) return true;
+    }
+    return false;
+}
+
+test "an example imported only on a commented line is not run, and is reported" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "examples");
+    try tmp.dir.writeFile(io, .{ .sub_path = "examples/all.zig", .data = "test {\n    _ = @import(\"a.zig\");\n    // _ = @import(\"b.zig\");\n}\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "examples/a.zig", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "examples/b.zig", .data = "" });
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var c: Check = .{ .arena = arena.allocator(), .io = io, .dir = tmp.dir, .fix = false };
+    try c.shown.put(c.arena, "examples/a.zig", {});
+    try c.shown.put(c.arena, "examples/b.zig", {});
+    try c.examples();
+    try std.testing.expectEqual(1, c.problems);
+}
 
 /// The file a link names, without its anchor, or null for a link that
 /// names no file here: a URL, an e-mail address, an anchor alone.
