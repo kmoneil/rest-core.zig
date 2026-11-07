@@ -1,4 +1,4 @@
-// From gcp.zig src/core/retry_after.zig at eae944c: its header readers and their tests. google.rpc.RetryInfo stays Google's, read by the cloud's hook; the HTTP-date parser moved to http_date.zig; x-ms-retry-after-ms is new; serverDelayMs takes any header type.
+// Ported from gcp.zig src/core/retry_after.zig at eae944c: its header readers and their tests. google.rpc.RetryInfo stays Google's, read by the cloud's hook; the HTTP-date parser moved to http_date.zig; x-ms-retry-after-ms is new; serverDelayMs takes any header type. gcp.zig has built on this copy since its 5aa9ba8.
 //! A server's retry delay: how long a refused response's headers asked its
 //! client to wait before trying again. Three headers are read, and the
 //! largest valid delay kept, since each means "at least this long":

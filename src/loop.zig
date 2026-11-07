@@ -1,4 +1,4 @@
-// From gcp.zig src/core/rpc.zig at eae944c: its request loop and tests, made neutral. Google's error body, RetryInfo and quota project are gcp.zig's hook's.
+// Ported from gcp.zig src/core/rpc.zig at eae944c: its request loop and tests, made neutral. Google's error body, RetryInfo and quota project are gcp.zig's hook's. gcp.zig has built on this copy since its 5aa9ba8.
 //! One API call, from URL to body: attach credentials, send it through the
 //! transport, map a failure to an error, retry the transient ones with
 //! jittered backoff, and keep `Diagnostics` and the log current.
@@ -56,6 +56,39 @@ const isRetryable = retry.isRetryable;
 /// Decides whether a failed attempt is worth another: the error, and the
 /// response's HTTP status or 0 when the attempt got none.
 pub const RetryableFn = *const fn (err: anyerror, http_status: u16) bool;
+
+/// Signs each attempt of a call, in place of a bearer token, as Azure
+/// Storage's Shared Key and AWS's SigV4 do: the loop calls `sign` once an
+/// attempt's headers are final, every attempt afresh (a retry's date and
+/// signature are its own), and sends the headers it returns, each in place
+/// of any of the same name. Allocate them in `scratch`. Thread-safety is
+/// the implementation's.
+pub const Signer = struct {
+    ptr: *anyopaque,
+    sign: *const fn (ptr: *anyopaque, io: std.Io, scratch: Allocator, attempt: Signable) Error![]const transport.Header,
+
+    /// A signer's failures are a credential's.
+    pub const Error = TokenProvider.Error;
+};
+
+/// One attempt as the transport will send it, for a `Signer`. The
+/// transport also writes Host (the URL's), User-Agent, Accept-Encoding and
+/// the framing; a signer that signs any of those reads them from here.
+pub const Signable = struct {
+    method: transport.Method,
+    /// Scheme, host, port, path and query, as sent.
+    url: []const u8,
+    /// The call's, then the engine's, in the order sent.
+    headers: []const transport.Header,
+    /// The Content-Type sent, or null for none.
+    content_type: ?[]const u8,
+    /// The Content-Length sent, or null when the request carries no body.
+    content_length: ?u64,
+    /// The body's bytes, in pieces sent back to back, for a signer that
+    /// hashes them; null when they come from a reader the loop cannot
+    /// read twice (`executeStreamBody`), whose length `content_length` has.
+    body: ?[]const []const u8,
+};
 
 /// One request, as a module describes it.
 pub const Call = struct {
@@ -210,6 +243,10 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         auth_scope: []const u8,
         /// Null where there is nothing to ask.
         token_provider: ?TokenProvider = null,
+        /// Signs each attempt in place of a bearer token (see `Signer`).
+        /// Set, the token provider is not asked and its headers are not
+        /// sent. Never asked for an `unauthenticated` engine.
+        signer: ?Signer = null,
         /// This endpoint must never receive credentials: an emulator speaks
         /// plain HTTP and needs none.
         unauthenticated: bool = false,
@@ -286,8 +323,12 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 .head_out = call.head_out,
             };
             attempts.clearOuts();
+            // The body as a signer sees it, one piece that outlives each
+            // attempt.
+            const body_piece = [1][]const u8{call.body orelse ""};
             while (true) : (attempts.number += 1) {
                 const bearer = try self.beginAttempt(scratch.allocator());
+                const sent_headers = try self.signed(scratch.allocator(), headers, bufferedSignable(call, url, headers, &body_piece));
                 const started = std.Io.Clock.awake.now(self.io);
                 const outcome = self.transport.send(.{
                     .method = call.method,
@@ -295,7 +336,7 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                     .bearer = bearer,
                     .body = call.body,
                     .content_type = call.content_type,
-                    .headers = headers,
+                    .headers = sent_headers,
                     .timeout_ms = call.timeout_ms orelse self.request_timeout_ms,
                 }, response.allocator());
                 const failed: Failed = if (outcome) |res| f: {
@@ -369,13 +410,14 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             const body = requestBody(call.body, streamed);
             while (true) : (attempts.number += 1) {
                 const bearer = try self.beginAttempt(scratch.allocator());
+                const sent_headers = try self.signed(scratch.allocator(), headers, streamSignable(call, url, headers, body));
                 const started = std.Io.Clock.awake.now(self.io);
                 const outcome = self.transport.sendStream(.{
                     .method = call.method,
                     .url = url,
                     .bearer = bearer,
                     .content_type = call.content_type,
-                    .headers = headers,
+                    .headers = sent_headers,
                     .body = body,
                     .sink = call.sink,
                     .accept_encoding = call.accept_encoding,
@@ -459,7 +501,7 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         /// beside it. The credential's go only where its token goes. The
         /// transport then holds all of them to the rules any header meets.
         fn allHeaders(self: Self, scratch: Allocator, call_headers: []const transport.Header) Allocator.Error![]const transport.Header {
-            const credential: []const transport.Header = if (self.unauthenticated or !self.send_credential_headers)
+            const credential: []const transport.Header = if (self.unauthenticated or !self.send_credential_headers or self.signer != null)
                 &.{}
             else if (self.token_provider) |p| p.headers() else &.{};
             if (credential.len == 0 and self.headers.len == 0) return call_headers;
@@ -673,6 +715,8 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         fn bearerToken(self: Self, scratch: Allocator) Error!?[]const u8 {
             // Never send credentials to an endpoint that speaks plain HTTP.
             if (self.unauthenticated) return null;
+            // A signer signs each attempt in the token's place.
+            if (self.signer != null) return null;
             const provider = self.token_provider orelse return null;
             // A provider given these same diagnostics explains its own
             // failures better than this loop can, such as which role an
@@ -688,6 +732,23 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 return error.TokenUnavailable;
             }
             return token;
+        }
+
+        /// The attempt's headers, signed when the engine has a signer: what
+        /// it returns goes in place of any header of the same name.
+        fn signed(self: Self, scratch: Allocator, headers: []const transport.Header, attempt: Signable) Error![]const transport.Header {
+            if (self.unauthenticated) return headers;
+            const signer = self.signer orelse return headers;
+            const added = signer.sign(signer.ptr, self.io, scratch, attempt) catch |err| {
+                if (self.diagnostics) |d| d.print("the signer failed: {t}", .{err});
+                return err;
+            };
+            var all: std.ArrayList(transport.Header) = .empty;
+            for (headers) |h| {
+                if (transport.findHeader(added, h.name) == null) try all.append(scratch, h);
+            }
+            try all.appendSlice(scratch, added);
+            return all.items;
         }
 
         /// Drops the cached token after a 401, so the next attempt fetches a
@@ -819,6 +880,52 @@ fn defaultPort(scheme: []const u8) u16 {
 }
 
 /// Appends each of `more` whose name no header in `all` has yet.
+/// What a buffered call's attempt sends, as `HttpTransport.send` sends it:
+/// a body, and its Content-Type, only for a method that carries one.
+/// `body` is the call's body as one piece, held by the caller so that it
+/// outlives the attempt.
+fn bufferedSignable(call: Call, url: []const u8, headers: []const transport.Header, body: *const [1][]const u8) Signable {
+    const request: transport.Request = .{ .method = call.method, .url = url, .body = call.body, .content_type = call.content_type };
+    const content_type = request.sentContentType();
+    return .{
+        .method = call.method,
+        .url = url,
+        .headers = headers,
+        .content_type = content_type,
+        .content_length = if (content_type != null) body[0].len else null,
+        .body = if (content_type != null) body else &.{},
+    };
+}
+
+/// What a streaming call's attempt sends: a method that carries a body
+/// sends an empty one, with its length, when it has none.
+fn streamSignable(call: StreamCall, url: []const u8, headers: []const transport.Header, body: transport.StreamRequest.Body) Signable {
+    const carries = switch (call.method) {
+        .GET, .HEAD, .DELETE => false,
+        .PUT, .POST, .PATCH => true,
+    };
+    return .{
+        .method = call.method,
+        .url = url,
+        .headers = headers,
+        .content_type = call.content_type,
+        .content_length = switch (body) {
+            .none => if (carries) 0 else null,
+            .segments => |segments| total: {
+                var n: u64 = 0;
+                for (segments) |piece| n += piece.len;
+                break :total n;
+            },
+            .stream => |source| source.len,
+        },
+        .body = switch (body) {
+            .none => &.{},
+            .segments => |segments| segments,
+            .stream => null,
+        },
+    };
+}
+
 fn appendNew(scratch: Allocator, all: *std.ArrayList(transport.Header), more: []const transport.Header) Allocator.Error!void {
     for (more) |h| {
         const taken = for (all.items) |kept| {

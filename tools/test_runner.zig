@@ -1,4 +1,4 @@
-// From gcp.zig tools/test_runner.zig at eae944c; carried unchanged below this line.
+// Ported from gcp.zig tools/test_runner.zig at eae944c; carried unchanged below this line. gcp.zig has built on this copy since its 5aa9ba8.
 // Copied from Zig (https://github.com/ziglang/zig), lib/compiler/test_runner.zig,
 // under the following license:
 //

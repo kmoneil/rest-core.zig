@@ -1,4 +1,4 @@
-// From gcp.zig src/core/PreparedRequest.zig at eae944c.
+// Ported from gcp.zig src/core/PreparedRequest.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! A request as a client would send it, built without sending it: to show
 //! before the call, as a console's confirmation does, or to record after
 //! it. A module builds one from the same `loop.Call` its write sends, so the

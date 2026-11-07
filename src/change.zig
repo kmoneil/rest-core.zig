@@ -1,4 +1,4 @@
-// From gcp.zig src/core/change.zig at eae944c.
+// Ported from gcp.zig src/core/change.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! `Change(T)`: what an update does to a setting that can be taken away.
 
 /// What an update does to a setting that can be taken away.

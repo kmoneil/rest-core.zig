@@ -1,4 +1,4 @@
-// From gcp.zig src/core/errors.zig at eae944c: its Diagnostics and truncateUtf8, with their tests. `status` is `code`, and the request id is new.
+// Ported from gcp.zig src/core/errors.zig at eae944c: its Diagnostics and truncateUtf8, with their tests. `status` is `code`, and the request id is new. gcp.zig has built on this copy since its 5aa9ba8.
 //! Details of the most recent failed call. Zig errors carry no payload, so
 //! pass `&diagnostics` in a client's options and read it after a call fails.
 //! A call that succeeds clears it. Not safe to share across concurrent

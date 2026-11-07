@@ -1,4 +1,4 @@
-// From gcp.zig src/core/retry.zig at eae944c.
+// Ported from gcp.zig src/core/retry.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! Retry policy: how long to wait between attempts, and which failures below
 //! HTTP are worth another. Which statuses and error codes a server's refusal
 //! may be retried on is each cloud's, through the request loop's hook.

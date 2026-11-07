@@ -1,4 +1,4 @@
-// From gcp.zig src/core/StaticToken.zig at eae944c.
+// Ported from gcp.zig src/core/StaticToken.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! A token provider that always returns one token, such as the output of
 //! `gcloud auth print-access-token` or `az account get-access-token`. Such
 //! tokens expire after about an hour.

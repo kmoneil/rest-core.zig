@@ -1,4 +1,4 @@
-// From gcp.zig src/core/retry_after.zig at eae944c: its HTTP-date parser and tests, moved here. `parse` and `format` are new.
+// Ported from gcp.zig src/core/retry_after.zig at eae944c: its HTTP-date parser and tests, moved here. `parse` and `format` are new. gcp.zig has built on this copy since its 5aa9ba8.
 //! HTTP dates (RFC 9110 5.6.7): read in any of RFC 9110's three formats,
 //! written as IMF-fixdate, the RFC 1123 form servers send
 //! (`Sun, 06 Nov 1994 08:49:37 GMT`). Retry-After and Date carry them, as do

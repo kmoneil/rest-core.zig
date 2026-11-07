@@ -1,4 +1,4 @@
-// From gcp.zig src/core/query.zig at eae944c.
+// Ported from gcp.zig src/core/query.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! Request paths and query strings: percent-encoding for path segments and
 //! query values, and a builder that appends parameters to a path.
 //!

@@ -1,4 +1,4 @@
-// From yaml.zig tools/doc_examples.zig at aad9a5e, with a check of the documents' relative links added, and its arguments read so Windows compiles it.
+// From yaml.zig tools/doc_examples.zig at 7cd3941 (aad9a5e, the commit it came from, is no longer in yaml.zig's history), with a check of the documents' relative links added, and its arguments read so Windows compiles it.
 //! Keeps the examples in README.md and docs/*.md true. A code block
 //! marked with a comment naming a file, at the start of a line,
 //!

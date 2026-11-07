@@ -1,4 +1,4 @@
-// From gcp.zig src/core/TokenProvider.zig at eae944c.
+// Ported from gcp.zig src/core/TokenProvider.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! Supplies OAuth bearer tokens, in the `std.mem.Allocator` interface shape:
 //! a pointer plus a table of functions. A service module asks for a token
 //! before each request. Where the token comes from (a pasted string, a
