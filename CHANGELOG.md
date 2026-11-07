@@ -36,6 +36,12 @@ Until 1.0, minor versions may break the API; each entry says how.
   ends that connection, not the run, so the next connection is served.
   `request()` and `url()` panic with a message where they read out of
   bounds or reached `unreachable`.
+- Fixed: `rsa.parsePem` took a private key whose public exponent ran
+  past 32 bits, which `PublicKey.fromSpki` refuses, and `writeSpki` sizes
+  its output for. A 4096-bit key with a 22-byte or longer exponent then
+  made `publicKey().writeSpki` panic in a safe build and spin for ever in
+  ReleaseFast. Such a key is `error.UnsupportedKey` now (security catalog
+  RSA-04).
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had

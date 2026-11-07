@@ -41,7 +41,8 @@ pub const ParseError = error{
     /// Not a PEM private key, or one whose contents do not decode.
     InvalidPrivateKey,
     /// A well-formed key this code cannot use: encrypted, not RSA,
-    /// multi-prime, or outside the supported modulus sizes.
+    /// multi-prime, outside the supported modulus sizes, or with a public
+    /// exponent over 32 bits.
     UnsupportedKey,
 };
 
@@ -507,13 +508,23 @@ fn parsePkcs1(bytes: []const u8) ParseError!PrivateKey {
     const e_bytes = magnitude(e_int) orelse return error.InvalidPrivateKey;
     const d_bytes = magnitude(d_int) orelse return error.InvalidPrivateKey;
 
+    const n, const e = try privatePublic(n_bytes, e_bytes);
+    if (d_bytes.len == 0 or d_bytes.len > max_modulus_bytes) return error.InvalidPrivateKey;
+    return keyOf(n, e, d_bytes, n_bytes, seq.body, &p);
+}
+
+/// A private key's modulus and public exponent, held to what this code
+/// signs with: a supported modulus size, and an odd exponent of at most
+/// 32 bits, as `PublicKey.fromSpki` reads one (`writeSpki` sizes its
+/// output for that).
+fn privatePublic(n_bytes: []const u8, e_bytes: []const u8) ParseError!struct { Modulus, Fe } {
     if (n_bytes.len > max_modulus_bytes) return error.UnsupportedKey;
     const n = Modulus.fromBytes(n_bytes, .big) catch return error.InvalidPrivateKey;
     if (n.bits() < min_modulus_bits) return error.UnsupportedKey;
+    if (e_bytes.len > 4) return error.UnsupportedKey;
     const e = Fe.fromBytes(n, e_bytes, .big) catch return error.InvalidPrivateKey;
     if (!e.isOdd()) return error.InvalidPrivateKey;
-    if (d_bytes.len == 0 or d_bytes.len > max_modulus_bytes) return error.InvalidPrivateKey;
-    return keyOf(n, e, d_bytes, n_bytes, seq.body, &p);
+    return .{ n, e };
 }
 
 /// The key from its parts, and the two primes that follow `d` in `body` at
@@ -912,6 +923,52 @@ test "rsa: what cannot be a usable key is refused by kind" {
     try testing.expectError(error.InvalidPrivateKey, parsePem(cut ++ "\n-----END PRIVATE KEY-----"));
 }
 
+/// test_key_4096 as a PKCS#1 `RSA PRIVATE KEY` PEM with its public
+/// exponent `e`, every other part as it was.
+fn withExponent(e: []const u8, der_buf: []u8, pem_buf: []u8) ![]const u8 {
+    const body = pemBody(test_key_4096, "PRIVATE KEY") orelse return error.TestUnexpectedResult;
+    var pkcs8_buf: [4096]u8 = undefined;
+    const decoder = std.base64.standard.decoderWithIgnore(" \t\r\n");
+    const pkcs8 = pkcs8_buf[0..try decoder.decode(&pkcs8_buf, body)];
+    // PrivateKeyInfo: SEQUENCE { version, algorithm, OCTET STRING { RSAPrivateKey } }.
+    var pos: usize = 0;
+    const info = readElement(pkcs8, &pos) orelse return error.TestUnexpectedResult;
+    var at: usize = 0;
+    for (0..2) |_| _ = readElement(info.body, &at) orelse return error.TestUnexpectedResult;
+    const octets = readElement(info.body, &at) orelse return error.TestUnexpectedResult;
+    var in: usize = 0;
+    const seq = readElement(octets.body, &in) orelse return error.TestUnexpectedResult;
+    // version, n, e, d, p, q, dp, dq, qinv
+    var parts: [9][]const u8 = undefined;
+    var part_at: usize = 0;
+    for (&parts) |*part| {
+        const int = readElement(seq.body, &part_at) orelse return error.TestUnexpectedResult;
+        part.* = magnitude(int) orelse return error.TestUnexpectedResult;
+    }
+    parts[2] = e;
+    var w: std.Io.Writer = .fixed(der_buf);
+    try writeIntegers(&w, &parts);
+    var b64_buf: [8192]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&b64_buf, w.buffered());
+    return std.fmt.bufPrint(pem_buf, "-----BEGIN RSA PRIVATE KEY-----\n{s}\n-----END RSA PRIVATE KEY-----\n", .{encoded});
+}
+
+test "rsa: a private key whose public exponent is over 32 bits is UnsupportedKey" {
+    // writeSpki sizes its output for an e of at most 4 bytes, as fromSpki
+    // reads one. Taken here, a long e made publicKey().writeSpki undefined
+    // in ReleaseFast (it spun for ever) for a 4096-bit modulus.
+    var der: [4096]u8 = undefined;
+    var pem: [8192]u8 = undefined;
+    // The same key with its own e reads, so what is refused is the e alone.
+    var same = try parsePem(try withExponent(&.{ 0x01, 0x00, 0x01 }, &der, &pem));
+    var spki: [max_spki_len]u8 = undefined;
+    _ = try PublicKey.fromSpki(same.publicKey().writeSpki(&spki));
+    same.deinit();
+    const long: [64]u8 = @splat(0x7f);
+    try testing.expectError(error.UnsupportedKey, parsePem(try withExponent(&long, &der, &pem)));
+    try testing.expectError(error.UnsupportedKey, parsePem(try withExponent(&.{ 0x01, 0x00, 0x00, 0x00, 0x01 }, &der, &pem)));
+}
+
 /// The DER inside a `PUBLIC KEY` PEM, into `buf`.
 fn publicDer(pem: []const u8, buf: []u8) ![]const u8 {
     const body = pemBody(pem, "PUBLIC KEY") orelse return error.TestUnexpectedResult;
@@ -1111,9 +1168,14 @@ test "fuzz rsa: arbitrary SubjectPublicKeyInfo never crashes, and what it reads 
 }
 
 fn pemProperty(_: void, input: []const u8) !void {
-    // Arbitrary bytes: a key or an error, never a crash.
+    // Arbitrary bytes: a key or an error, never a crash. A key it reads
+    // writes its public half, which reads back as the same key.
     var key = parsePem(input) catch return;
-    key.deinit();
+    defer key.deinit();
+    var spki: [max_spki_len]u8 = undefined;
+    const written = key.publicKey().writeSpki(&spki);
+    var again: [max_spki_len]u8 = undefined;
+    try testing.expectEqualSlices(u8, written, (try PublicKey.fromSpki(written)).writeSpki(&again));
 }
 
 fn wrappedProperty(_: void, input: []const u8) !void {
