@@ -429,7 +429,12 @@ pub fn parsePem(pem: []const u8) ParseError!PrivateKey {
     var der_buf: [4096]u8 = undefined;
     defer std.crypto.secureZero(u8, &der_buf);
     const decoder = std.base64.standard.decoderWithIgnore(" \t\r\n");
-    const len = decoder.decode(&der_buf, body) catch return error.InvalidPrivateKey;
+    const len = decoder.decode(&der_buf, body) catch |err| return switch (err) {
+        // A key past what this code holds (an 8192-bit one): unsupported,
+        // not "not a key".
+        error.NoSpaceLeft => error.UnsupportedKey,
+        else => error.InvalidPrivateKey,
+    };
     return parseDer(der_buf[0..len]);
 }
 
@@ -982,6 +987,18 @@ fn withPart(index: usize, value: []const u8, der_buf: []u8, pem_buf: []u8) ![]co
     var b64_buf: [8192]u8 = undefined;
     const encoded = std.base64.standard.Encoder.encode(&b64_buf, w.buffered());
     return std.fmt.bufPrint(pem_buf, "-----BEGIN RSA PRIVATE KEY-----\n{s}\n-----END RSA PRIVATE KEY-----\n", .{encoded});
+}
+
+test "rsa: a key too big to hold is UnsupportedKey, not InvalidPrivateKey" {
+    // An 8192-bit key's DER is over the 4 KiB parsePem holds: a key, but
+    // not one this code can use, so not "not a key", which a caller
+    // reports as a file that is not a PEM key at all.
+    const der: [5000]u8 = @splat(0x30);
+    var b64: [std.base64.standard.Encoder.calcSize(der.len)]u8 = undefined;
+    const encoded = std.base64.standard.Encoder.encode(&b64, &der);
+    var pem: [8192]u8 = undefined;
+    const text = try std.fmt.bufPrint(&pem, "-----BEGIN PRIVATE KEY-----\n{s}\n-----END PRIVATE KEY-----\n", .{encoded});
+    try testing.expectError(error.UnsupportedKey, parsePem(text));
 }
 
 test "rsa: a private key whose public exponent is over 32 bits is UnsupportedKey" {
