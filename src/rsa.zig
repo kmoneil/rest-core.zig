@@ -188,6 +188,8 @@ pub const PrivateKey = struct {
         // the modulus, so it is always below it.
         const m = Fe.fromBytes(key.n, em, .big) catch return error.SignatureFailed;
         var blind: [8]u8 = undefined;
+        // With the blinded exponent, k gives d away.
+        defer std.crypto.secureZero(u8, &blind);
         io.random(&blind);
         var exponent_buf: [max_blinded_bytes]u8 = undefined;
         defer std.crypto.secureZero(u8, &exponent_buf);
@@ -406,8 +408,12 @@ fn verifyPssEncoding(comptime H: type, m_hash: []const u8, em: []const u8, em_bi
     return std.mem.eql(u8, &want, h);
 }
 
-/// Parses a PEM private key. `pem` may hold anything; nothing secret from
-/// it outlives the call except inside the returned key.
+/// Parses a PEM private key. `pem` may hold anything. Every buffer that
+/// held a secret on the way is wiped, a refused key's too. The key is
+/// returned by value, and Zig does not promise to build it in place: a
+/// copy of it, `d` with it, may be left in the stack the call used,
+/// which `deinit` cannot reach (seen in ReleaseFast). Keep a parsed key
+/// for the program's life rather than parsing one per use.
 pub fn parsePem(pem: []const u8) ParseError!PrivateKey {
     if (std.mem.indexOf(u8, pem, "-----BEGIN ENCRYPTED PRIVATE KEY-----") != null) {
         return error.UnsupportedKey;
@@ -544,6 +550,8 @@ fn keyOf(n: Modulus, e: Fe, d_bytes: []const u8, n_bytes: []const u8, body: []co
         .len = (n.bits() + 7) / 8,
     };
     @memcpy(key.d[0..d_bytes.len], d_bytes);
+    // A key refused here leaves no `d` on the stack.
+    errdefer key.wipe();
     key.phi_len = (try totient(n_bytes, p_bytes, q_bytes, &key.phi)).len;
     return key;
 }
@@ -598,6 +606,8 @@ fn mulBytes(a: []const u8, b: []const u8, out: []u8) []const u8 {
     const n = a.len + b.len;
     std.debug.assert(out.len >= n);
     var columns: [2 * max_modulus_bytes]u64 = @splat(0);
+    // The columns of (p - 1)(q - 1) are the totient before its carries.
+    defer std.crypto.secureZero(u64, &columns);
     for (0..a.len) |i| {
         const x: u64 = a[a.len - 1 - i];
         for (0..b.len) |j| columns[i + j] += x * b[b.len - 1 - j];
@@ -923,9 +933,10 @@ test "rsa: what cannot be a usable key is refused by kind" {
     try testing.expectError(error.InvalidPrivateKey, parsePem(cut ++ "\n-----END PRIVATE KEY-----"));
 }
 
-/// test_key_4096 as a PKCS#1 `RSA PRIVATE KEY` PEM with its public
-/// exponent `e`, every other part as it was.
-fn withExponent(e: []const u8, der_buf: []u8, pem_buf: []u8) ![]const u8 {
+/// test_key_4096 as a PKCS#1 `RSA PRIVATE KEY` PEM with its part `index`
+/// (0 version, 1 n, 2 e, 3 d, 4 p, 5 q, ...) set to `value`, every other
+/// part as it was.
+fn withPart(index: usize, value: []const u8, der_buf: []u8, pem_buf: []u8) ![]const u8 {
     const body = pemBody(test_key_4096, "PRIVATE KEY") orelse return error.TestUnexpectedResult;
     var pkcs8_buf: [4096]u8 = undefined;
     const decoder = std.base64.standard.decoderWithIgnore(" \t\r\n");
@@ -945,7 +956,7 @@ fn withExponent(e: []const u8, der_buf: []u8, pem_buf: []u8) ![]const u8 {
         const int = readElement(seq.body, &part_at) orelse return error.TestUnexpectedResult;
         part.* = magnitude(int) orelse return error.TestUnexpectedResult;
     }
-    parts[2] = e;
+    parts[index] = value;
     var w: std.Io.Writer = .fixed(der_buf);
     try writeIntegers(&w, &parts);
     var b64_buf: [8192]u8 = undefined;
@@ -960,13 +971,13 @@ test "rsa: a private key whose public exponent is over 32 bits is UnsupportedKey
     var der: [4096]u8 = undefined;
     var pem: [8192]u8 = undefined;
     // The same key with its own e reads, so what is refused is the e alone.
-    var same = try parsePem(try withExponent(&.{ 0x01, 0x00, 0x01 }, &der, &pem));
+    var same = try parsePem(try withPart(2, &.{ 0x01, 0x00, 0x01 }, &der, &pem));
     var spki: [max_spki_len]u8 = undefined;
     _ = try PublicKey.fromSpki(same.publicKey().writeSpki(&spki));
     same.deinit();
     const long: [64]u8 = @splat(0x7f);
-    try testing.expectError(error.UnsupportedKey, parsePem(try withExponent(&long, &der, &pem)));
-    try testing.expectError(error.UnsupportedKey, parsePem(try withExponent(&.{ 0x01, 0x00, 0x00, 0x00, 0x01 }, &der, &pem)));
+    try testing.expectError(error.UnsupportedKey, parsePem(try withPart(2, &long, &der, &pem)));
+    try testing.expectError(error.UnsupportedKey, parsePem(try withPart(2, &.{ 0x01, 0x00, 0x00, 0x00, 0x01 }, &der, &pem)));
 }
 
 /// The DER inside a `PUBLIC KEY` PEM, into `buf`.
