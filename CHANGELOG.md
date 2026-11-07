@@ -53,6 +53,12 @@ Until 1.0, minor versions may break the API; each entry says how.
   as a fault in the key or the arithmetic makes) was already written into
   the caller's `out`: the faulty signature a fault attack wants. It is
   written only once it verifies (security catalog RSA-02).
+- Fixed: `rsa.PrivateKey.signDigest` and `signPss` asserted that the
+  digest was the hash's length, and signing asserted that `out` held the
+  key's length. In ReleaseFast a message passed in place of its digest
+  wrapped the encoding's offset and wrote past its buffer. Each is
+  `error.SignatureFailed` now, as the verify side already returned an
+  error for the same mismatch.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
