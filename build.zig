@@ -82,7 +82,7 @@ pub fn build(b: *std.Build) void {
     // `unreachable`, overflow and a cast out of range are undefined rather
     // than a panic. `zig build test test-release` runs all three.
     const release_step = b.step("test-release", "Run the unit tests with the library built ReleaseSafe and ReleaseFast");
-    for ([_]std.builtin.Optimize{ .safe, .fast }) |mode| {
+    for ([_]std.lang.Optimize{ .safe, .fast }) |mode| {
         const release_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
@@ -181,9 +181,8 @@ pub fn build(b: *std.Build) void {
 
     // zigvet (github.com/kmoneil/zigvet) reports code the compiler accepts
     // that is almost certainly wrong. A program on the PATH, not a package;
-    // `zig build test` runs it, so no change is tested without it. Add
-    // examples/ here when it exists. It skips zig-pkg and hidden directories
-    // by itself.
+    // `zig build test` runs it, so no change is tested without it. It skips
+    // zig-pkg and hidden directories by itself.
     const lint = b.addSystemCommand(&.{ "zigvet", "build.zig", "src", "test", "tools", "examples" });
     lint.setCwd(b.path("."));
     b.step("lint", "Report code that compiles but is wrong (zigvet, from the PATH)").dependOn(&lint.step);
@@ -203,7 +202,7 @@ pub fn build(b: *std.Build) void {
 
     const fmt_paths: []const std.Build.LazyPath = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("test"), b.path("tools"), b.path("examples") };
     test_step.dependOn(&b.addFmt(.{ .paths = fmt_paths, .check = true }).step);
-    b.step("fmt", "Format the Zig in build.zig, src/, test/ and tools/").dependOn(&b.addFmt(.{ .paths = fmt_paths }).step);
+    b.step("fmt", "Format the Zig in build.zig, build.zig.zon, src/, test/, tools/ and examples/").dependOn(&b.addFmt(.{ .paths = fmt_paths }).step);
 
     // The API reference, from the doc comments: zig-out/docs/index.html.
     const lib = b.addLibrary(.{ .name = "rest_core", .root_module = mod });
@@ -212,7 +211,7 @@ pub fn build(b: *std.Build) void {
 }
 
 /// The security suite's module, over `rest_core` built as `mod` is.
-fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, mod: *std.Build.Module) *std.Build.Module {
+fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, mod: *std.Build.Module) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("test/security/security_test.zig"),
         .target = target,
@@ -222,7 +221,7 @@ fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std
 }
 
 /// The examples' module, over `rest_core` built as `mod` is.
-fn examplesModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.Optimize, mod: *std.Build.Module) *std.Build.Module {
+fn examplesModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, mod: *std.Build.Module) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("examples/all.zig"),
         .target = target,

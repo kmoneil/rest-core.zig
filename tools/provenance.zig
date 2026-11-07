@@ -124,7 +124,7 @@ fn checkTree(io: Io, arena: Allocator, root: Io.Dir, dirs: []const []const u8, c
             const path = try std.fmt.allocPrint(arena, "{s}/{s}", .{ dir_path, entry.path });
             std.mem.replaceScalar(u8, path, '\\', '/');
             const text = try root.readFileAlloc(io, path, arena, .limited(16 << 20));
-            const first = text[0 .. std.mem.indexOfScalar(u8, text, '\n') orelse text.len];
+            const first = text[0 .. std.mem.findScalar(u8, text, '\n') orelse text.len];
             const source = parse(first) orelse continue;
             checked += 1;
             outcome = worse(outcome, try checkFile(arena, path, source, checkouts, log, ctx, w));
@@ -170,7 +170,7 @@ pub fn main(init: std.process.Init) !u8 {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--checkout") and i + 1 < args.len) {
             i += 1;
-            const eq = std.mem.indexOfScalar(u8, args[i], '=') orelse return usage();
+            const eq = std.mem.findScalar(u8, args[i], '=') orelse return usage();
             try checkouts.insert(arena, 0, .{ .repo = args[i][0..eq], .dir = args[i][eq + 1 ..] });
         } else return usage();
     }
@@ -227,9 +227,9 @@ test "a ported file changed at its source since its commit is listed with the co
     }, &fake, &default_checkouts);
     defer std.testing.allocator.free(got[1]);
     try std.testing.expectEqual(.changed, got[0]);
-    try std.testing.expect(std.mem.indexOf(u8, got[1], "src/transport.zig: gcp.zig src/core/transport.zig changed since eae944c:\n    1a2b3c4 Fix the chunked decoder\n    5d6e7f8 Read the TLS clock again\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, got[1], "retry.zig:") == null);
-    try std.testing.expect(std.mem.indexOf(u8, got[1], "2 ported files checked") != null);
+    try std.testing.expect(std.mem.find(u8, got[1], "src/transport.zig: gcp.zig src/core/transport.zig changed since eae944c:\n    1a2b3c4 Fix the chunked decoder\n    5d6e7f8 Read the TLS clock again\n") != null);
+    try std.testing.expect(std.mem.find(u8, got[1], "retry.zig:") == null);
+    try std.testing.expect(std.mem.find(u8, got[1], "2 ported files checked") != null);
 }
 
 test "nothing changed is a pass; an unknown commit or a repo with no checkout is never one" {
@@ -242,16 +242,16 @@ test "nothing changed is a pass; an unknown commit or a repo with no checkout is
     const bad = try checkedTree(&.{.{ "src/a.zig", "// From gcp.zig src/core/a.zig at deadbee.\n" }}, &unknown, &default_checkouts);
     defer std.testing.allocator.free(bad[1]);
     try std.testing.expectEqual(.unchecked, bad[0]);
-    try std.testing.expect(std.mem.indexOf(u8, bad[1], "UnknownCommit") != null);
+    try std.testing.expect(std.mem.find(u8, bad[1], "UnknownCommit") != null);
 
     const nowhere = try checkedTree(&.{.{ "tools/x.zig", "// From ekur tools/x.zig at abcdef0.\n" }}, &quiet, &default_checkouts);
     defer std.testing.allocator.free(nowhere[1]);
     try std.testing.expectEqual(.unchecked, nowhere[0]);
-    try std.testing.expect(std.mem.indexOf(u8, nowhere[1], "--checkout ekur=DIR") != null);
+    try std.testing.expect(std.mem.find(u8, nowhere[1], "--checkout ekur=DIR") != null);
 
     // No ported file at all: nothing was checked, which is not a pass.
     const none = try checkedTree(&.{.{ "src/own.zig", "//! Written here.\n" }}, &quiet, &default_checkouts);
     defer std.testing.allocator.free(none[1]);
     try std.testing.expectEqual(.unchecked, none[0]);
-    try std.testing.expect(std.mem.indexOf(u8, none[1], "nothing was checked") != null);
+    try std.testing.expect(std.mem.find(u8, none[1], "nothing was checked") != null);
 }

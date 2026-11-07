@@ -81,7 +81,7 @@ fn imfFixdate(t: []const u8) ?i64 {
 
 fn rfc850Date(t: []const u8) ?i64 {
     // "Sunday, 06-Nov-94 08:49:37 GMT"
-    const comma = std.mem.indexOfScalar(u8, t, ',') orelse return null;
+    const comma = std.mem.findScalar(u8, t, ',') orelse return null;
     if (!isOneOf(t[0..comma], &long_day_names)) return null;
     const rest = t[comma..];
     if (rest.len != 24 or rest[1] != ' ' or rest[4] != '-' or rest[8] != '-' or rest[11] != ' ' or !std.mem.eql(u8, rest[20..], " GMT")) return null;

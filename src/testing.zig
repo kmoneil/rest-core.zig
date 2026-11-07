@@ -678,7 +678,7 @@ pub const FaultTransport = struct {
         var claimed: ?usize = null;
         for (self.plan, 0..) |*fault, i| {
             if (fault.method != method) continue;
-            if (std.mem.indexOf(u8, url, fault.url_contains) == null) continue;
+            if (std.mem.find(u8, url, fault.url_contains) == null) continue;
             const matches = switch (fault.action) {
                 .cut_request_body => |n| delivery != .buffered and body_len > n,
                 .cut_response_body => delivery == .streamed,

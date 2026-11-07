@@ -108,7 +108,7 @@ const GoogleShaped = struct {
     fn durationMs(text: []const u8) ?u32 {
         if (!std.mem.endsWith(u8, text, "s")) return null;
         const number = text[0 .. text.len - 1];
-        const dot = std.mem.indexOfScalar(u8, number, '.') orelse number.len;
+        const dot = std.mem.findScalar(u8, number, '.') orelse number.len;
         const whole = std.fmt.parseInt(u32, number[0..dot], 10) catch return null;
         var ms: u32 = 0;
         if (dot < number.len) {
@@ -312,7 +312,7 @@ test "an engine's own refusal replaces the cloud's, and its error decides the re
         fn refusal(scratch: Allocator, res: transport.Response, d: ?*Diagnostics) (GoogleShaped.RefusalError || Allocator.Error) {
             const err = GoogleShaped.refusal(scratch, res, d);
             if (err == error.OutOfMemory) return err;
-            return if (std.mem.indexOf(u8, res.body, "rateLimitExceeded") != null) error.ResourceExhausted else err;
+            return if (std.mem.find(u8, res.body, "rateLimitExceeded") != null) error.ResourceExhausted else err;
         }
     };
     var h: H = undefined;
@@ -668,7 +668,7 @@ test "credentials: a token that cannot go in a header fails before sending" {
     h.token.token = "ya29.trailing-newline\n";
     try testing.expectError(error.TokenUnavailable, h.get());
     try testing.expectEqual(0, h.fake.requests.items.len);
-    try testing.expect(std.mem.indexOf(u8, h.diag.message(), "newlines") != null);
+    try testing.expect(std.mem.find(u8, h.diag.message(), "newlines") != null);
 }
 
 test "credentials: a provider's own explanation survives in shared diagnostics" {
@@ -708,7 +708,7 @@ test "credentials: the provider's own failure is returned, not retried" {
     h.token.fail = error.ReauthenticationRequired;
     try testing.expectError(error.ReauthenticationRequired, h.get());
     try testing.expectEqual(0, h.fake.requests.items.len);
-    try testing.expect(std.mem.indexOf(u8, h.diag.message(), "token provider failed") != null);
+    try testing.expect(std.mem.find(u8, h.diag.message(), "token provider failed") != null);
 }
 
 test "timeouts: every attempt carries the engine's limit, and a stream's own replaces it" {
@@ -910,10 +910,10 @@ test "the log names the method, the path without its query, statuses and timings
     const e = h.engine();
     _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things?pageToken=secret-page-token&filter=x" });
     const text = log.capture.text();
-    try testing.expect(std.mem.indexOf(u8, text, "GET /v1/things ") != null);
-    try testing.expect(std.mem.indexOf(u8, text, "503") != null);
+    try testing.expect(std.mem.find(u8, text, "GET /v1/things ") != null);
+    try testing.expect(std.mem.find(u8, text, "503") != null);
     for ([_][]const u8{ "secret-page-token", "pageToken", "ya29.secret", "?" }) |never| {
-        try testing.expect(std.mem.indexOf(u8, text, never) == null);
+        try testing.expect(std.mem.find(u8, text, never) == null);
     }
 }
 
@@ -1033,7 +1033,7 @@ fn failedBodySurvives(wipe: bool) !bool {
     defer arena.deinit();
     const e = h.engine();
     _ = try e.execute(&arena, .{ .method = .GET, .path = "/v1/things", .wipe = wipe });
-    return std.mem.indexOf(u8, &backing, marker) != null;
+    return std.mem.find(u8, &backing, marker) != null;
 }
 
 test "wipe: a failed attempt's body is wiped before the next attempt" {
@@ -1077,11 +1077,11 @@ test "wipe: the bearer token does not outlive the call" {
 
     const body = try e.execute(&response, .{ .method = .GET, .path = "/v1/things", .wipe = true });
     try testing.expectEqualStrings("{}", body);
-    try testing.expectEqual(null, std.mem.indexOf(u8, &scratch_backing, token));
-    try testing.expectEqual(null, std.mem.indexOf(u8, &response_backing, token));
+    try testing.expectEqual(null, std.mem.find(u8, &scratch_backing, token));
+    try testing.expectEqual(null, std.mem.find(u8, &response_backing, token));
     // The request really did carry it.
     try serving.await(io);
-    try testing.expect(std.mem.indexOf(u8, server.request(0), "Bearer " ++ token) != null);
+    try testing.expect(std.mem.find(u8, server.request(0), "Bearer " ++ token) != null);
 }
 
 test "error_body_out: the last failed response's body, null on success and with no response" {
@@ -1341,7 +1341,7 @@ fn streamTokenSurvives(wipe: bool) !bool {
     e.gpa = fba.allocator();
     _ = try e.executeStream(&h.arena, .{ .method = .GET, .path = "/v1/o", .wipe = wipe });
     try testing.expectEqualStrings(token, (try h.fake.streamRequest(0)).bearer.?);
-    return std.mem.indexOf(u8, &backing, token) != null;
+    return std.mem.find(u8, &backing, token) != null;
 }
 
 test "StreamCall.wipe: the loop's copy of the token does not outlive the call" {

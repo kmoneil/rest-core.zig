@@ -336,7 +336,7 @@ fn encodeProperty(_: void, input: []const u8) !void {
     try writeSegment(&w, input);
     try expectEncoding(w.buffered(), input, isPathChar);
     // A segment never contains a separator the server would split on.
-    try testing.expect(std.mem.indexOfAny(u8, w.buffered(), "/?#") == null);
+    try testing.expect(std.mem.findAny(u8, w.buffered(), "/?#") == null);
 
     w = .fixed(&buf);
     try writeValue(&w, input);
@@ -347,7 +347,7 @@ fn encodeProperty(_: void, input: []const u8) !void {
     try writePath(&w, input);
     try expectEncoding(w.buffered(), input, isPathCharOrSlash);
     try testing.expectEqual(std.mem.count(u8, input, "/"), std.mem.count(u8, w.buffered(), "/"));
-    try testing.expect(std.mem.indexOfAny(u8, w.buffered(), "?#") == null);
+    try testing.expect(std.mem.findAny(u8, w.buffered(), "?#") == null);
 }
 
 test "fuzz percent-encoding round-trips and emits only safe bytes" {
@@ -380,7 +380,7 @@ fn paramsProperty(_: void, input: []const u8) !void {
 
     // The query is exactly the parameters that were added: split on the
     // separators the builder wrote, and every part decodes to its input.
-    const query_at = std.mem.indexOfScalar(u8, built, '?');
+    const query_at = std.mem.findScalar(u8, built, '?');
     try testing.expectEqualStrings("/v1/x", built[0 .. query_at orelse built.len]);
     if (count == 0) {
         try testing.expectEqual(null, query_at);
@@ -391,7 +391,7 @@ fn paramsProperty(_: void, input: []const u8) !void {
     var parts = std.mem.splitScalar(u8, copy[query_at.? + 1 .. built.len], '&');
     for (0..count) |i| {
         const part = parts.next() orelse return error.TestMissingParameter;
-        const equals = std.mem.indexOfScalar(u8, part, '=') orelse return error.TestMissingValue;
+        const equals = std.mem.findScalar(u8, part, '=') orelse return error.TestMissingValue;
         try testing.expectEqualStrings(names[i], std.Uri.percentDecodeInPlace(@constCast(part[0..equals])));
         try testing.expectEqualStrings(values[i], std.Uri.percentDecodeInPlace(@constCast(part[equals + 1 ..])));
     }

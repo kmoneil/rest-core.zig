@@ -62,9 +62,12 @@ const Check = struct {
     /// The example files some document shows.
     shown: std.StringHashMapUnmanaged(void) = .empty,
     problems: usize = 0,
+    /// Where each problem is written, a line each; null is stderr. A test
+    /// gives a writer of its own, so its run prints nothing.
+    out: ?*Io.Writer = null,
 
     fn problem(c: *Check, comptime fmt: []const u8, args: anytype) void {
-        std.debug.print(fmt ++ "\n", args);
+        if (c.out) |w| w.print(fmt ++ "\n", args) catch {} else std.debug.print(fmt ++ "\n", args);
         c.problems += 1;
     }
 
@@ -156,18 +159,21 @@ test "an example imported only on a commented line is not run, and is reported" 
     try tmp.dir.writeFile(io, .{ .sub_path = "examples/b.zig", .data = "" });
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
-    var c: Check = .{ .arena = arena.allocator(), .io = io, .dir = tmp.dir, .fix = false };
+    var out: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var c: Check = .{ .arena = arena.allocator(), .io = io, .dir = tmp.dir, .fix = false, .out = &out.writer };
     try c.shown.put(c.arena, "examples/a.zig", {});
     try c.shown.put(c.arena, "examples/b.zig", {});
     try c.examples();
     try std.testing.expectEqual(1, c.problems);
+    try std.testing.expectEqualStrings("examples/b.zig is not imported by examples/all.zig, so it never runs\n", out.written());
 }
 
 /// The file a link names, without its anchor, or null for a link that
 /// names no file here: a URL, an e-mail address, an anchor alone.
 fn linkedFile(target: []const u8) ?[]const u8 {
     for ([_][]const u8{ "http://", "https://", "mailto:" }) |scheme| if (std.mem.startsWith(u8, target, scheme)) return null;
-    const file = target[0 .. std.mem.indexOfScalar(u8, target, '#') orelse target.len];
+    const file = target[0 .. std.mem.findScalar(u8, target, '#') orelse target.len];
     return if (file.len == 0) null else file;
 }
 

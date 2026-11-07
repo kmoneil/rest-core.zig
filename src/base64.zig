@@ -19,7 +19,7 @@ pub const Error = error{ InvalidBase64, OutOfMemory };
 /// as proto3 JSON parsers must, but not a mix of the two alphabets. The
 /// caller owns the bytes returned; on an error nothing stays allocated.
 pub fn decode(gpa: Allocator, text: []const u8) Error![]u8 {
-    const url_safe = std.mem.indexOfAny(u8, text, "-_") != null;
+    const url_safe = std.mem.findAny(u8, text, "-_") != null;
     const padded = text.len % 4 == 0 and std.mem.endsWith(u8, text, "=");
     const codecs = if (url_safe)
         if (padded) std.base64.url_safe else std.base64.url_safe_no_pad
