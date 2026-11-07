@@ -277,8 +277,9 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             call: StreamCall,
         ) StreamCallError!transport.StreamResponse {
             return self.stream(response, call, null) catch |err| switch (err) {
-                // Only a streamed body reads.
-                error.ReadFailed, error.EndOfStream => unreachable,
+                // Only a streamed body's reader fails as itself; with none,
+                // `streamFailure` has named the transport's.
+                error.ReadFailed, error.EndOfStream => error.ConnectionResetByPeer,
                 else => |e| e,
             };
         }
@@ -362,9 +363,16 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             return switch (err) {
                 // The caller's sink writer failed; nothing to retry.
                 error.WriteFailed => error.WriteFailed,
-                // The caller's body reader failed or ran short. Only a
-                // streamed body reads, and it is never retried.
-                error.ReadFailed, error.EndOfStream => |e| if (streamed) e else unreachable,
+                // The caller's body reader failed or ran short, and a
+                // streamed body is never retried. With no body of the
+                // caller's to read, they are the transport's own reader
+                // failing on the response (not HttpTransport's, which maps
+                // them; another Transport's may): a short body, as
+                // HttpTransport names one.
+                error.ReadFailed, error.EndOfStream => |e| if (streamed) e else .{
+                    .err = error.ConnectionResetByPeer,
+                    .sink_dirty = call.sink == .writer,
+                },
                 // A transport failure may have delivered part of the body to
                 // a writer sink already, which only a sink that can start
                 // over takes back, asked once a retry is decided.

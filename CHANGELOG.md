@@ -30,6 +30,14 @@ Until 1.0, minor versions may break the API; each entry says how.
   attempt, a failure not retried, or any `executeStreamBody` failure the
   sink was emptied and the part of the body a resume counts on was lost.
   It is asked only once a retry is decided.
+- Fixed: two slips in a `Transport` of your own were undefined in
+  ReleaseFast. `executeStream` took `error.ReadFailed` and
+  `error.EndOfStream` as unreachable when no streamed body was given,
+  though `StreamError` allows them on any request; they are now the
+  transport's own short body, `error.ConnectionResetByPeer`, retried as
+  one. `Transport.sendStream` through a vtable with no `sendStream` (a
+  fake that sets `send` only) panics in every mode, where it unwrapped a
+  null.
 
 ## 0.2.1 (2026-11-06)
 
