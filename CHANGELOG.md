@@ -11,6 +11,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   bound, and on a chunk size near 2^64 a panic in a safe build and
   undefined in ReleaseFast. The connection is closed now, as on every
   other failure after the head (security catalog RESP-02).
+- Fixed: a canceled call could be retried, and its canceler wait out
+  every retry. `HttpTransport` reported a cancel that landed while it
+  drained a compressed body that would not decode as a dropped
+  connection, which is retried, and the loop asked `retryable` about
+  `error.Canceled` too, so a widened one sent the call again. The
+  transport returns `error.Canceled` there now, and the loop never
+  retries it, whatever `retryable` says (security catalog RETRY-04).
 
 ## 0.2.1 (2026-11-06)
 

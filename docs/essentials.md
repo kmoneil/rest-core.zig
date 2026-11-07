@@ -73,7 +73,8 @@ its content type, headers), `executeStream` with a `StreamCall`, or
    retried, up to `RetryPolicy.max_attempts`, waiting a full-jitter backoff
    or the delay the server asked for, whichever is longer. A server delay
    past `max_backoff_ms` is not waited: the call returns with the delay in
-   `Diagnostics`, for a caller that schedules its own next try.
+   `Diagnostics`, for a caller that schedules its own next try. A canceled
+   call returns `error.Canceled`, never retried, whatever `retryable` says.
 
 A call that must not be repeated once it may have reached the server, as a
 create, passes `retryable = loop.unsentOnly`. `retry_window_ms` bounds how
