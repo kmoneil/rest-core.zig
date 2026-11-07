@@ -14,6 +14,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   and `std.Io.Threaded`'s default is the CPU count less one, none on a
   one-CPU machine; set `async_limit` when making the `Io` (security
   catalog CONN-08, now with a test that a cancel holds given room).
+- Fixed: a response whose status was not three digits was read as one
+  (`HTTP/1.1 1;0 OK` as 210, a success); it is `error.HttpProtocolError`.
+  A host std will not name (`http://a_b!.example/`, or an IPv6 literal
+  over HTTPS) is `error.InvalidEndpoint` before anything connects, from
+  `HttpTransport` and `FakeTransport` alike, where it was
+  `NetworkFailure`. A timed request starts its timer before its own
+  task, so when the second cannot start, nothing has been sent.
 
 ## 0.3.0 (2026-11-07)
 
