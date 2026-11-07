@@ -72,6 +72,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   test, so a "never contains" check could fail, or a "contains" one
   pass, on stale bytes. A line that does not fit now takes no room, and
   `capture.dropped` counts such lines.
+- Fixed: `rsa.parsePem` called a key too big for it (an 8192-bit one)
+  `InvalidPrivateKey`, which a caller reports as a file that is not a
+  PEM key at all; it is `UnsupportedKey`, as `ParseError` says. And
+  `base64.decode` kept what it allocated when the text was not base64,
+  which leaked under any allocator but an arena; it frees it now.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had

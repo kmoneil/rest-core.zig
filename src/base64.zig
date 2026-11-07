@@ -15,15 +15,17 @@ const test_util = @import("testing.zig");
 pub const Error = error{ InvalidBase64, OutOfMemory };
 
 /// Decodes base64 with or without padding. Accepts the URL-safe alphabet too,
-/// as proto3 JSON parsers must, but not a mix of the two alphabets.
-pub fn decode(arena: Allocator, text: []const u8) Error![]u8 {
+/// as proto3 JSON parsers must, but not a mix of the two alphabets. The
+/// caller owns the bytes returned; on an error nothing stays allocated.
+pub fn decode(gpa: Allocator, text: []const u8) Error![]u8 {
     const url_safe = std.mem.indexOfAny(u8, text, "-_") != null;
     const padded = text.len % 4 == 0 and std.mem.endsWith(u8, text, "=");
     const codecs = if (url_safe)
         if (padded) std.base64.url_safe else std.base64.url_safe_no_pad
     else if (padded) std.base64.standard else std.base64.standard_no_pad;
     const size = codecs.Decoder.calcSizeForSlice(text) catch return error.InvalidBase64;
-    const out = try arena.alloc(u8, size);
+    const out = try gpa.alloc(u8, size);
+    errdefer gpa.free(out);
     codecs.Decoder.decode(out, text) catch return error.InvalidBase64;
     return out;
 }
@@ -45,6 +47,11 @@ pub fn writeJsonString(jw: *Stringify, data: []const u8) Stringify.Error!void {
 }
 
 const testing = std.testing;
+
+test "decode frees what it allocated when the text is not base64" {
+    // Under std.testing.allocator a leak fails the test.
+    try std.testing.expectError(error.InvalidBase64, decode(std.testing.allocator, "aGk*"));
+}
 
 test "padding, alphabets and rejects" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
