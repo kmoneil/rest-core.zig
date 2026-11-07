@@ -1,4 +1,4 @@
-// From gcp.zig src/core/base64.zig at eae944c.
+// Ported from gcp.zig src/core/base64.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! Base64 as JSON APIs carry bytes: proto3 JSON's `bytes` fields (Google's
 //! APIs: a Pub/Sub message's data, a secret's payload) and any other field
 //! that travels as a base64 string.

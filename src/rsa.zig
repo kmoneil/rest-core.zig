@@ -1,4 +1,4 @@
-// From gcp.zig src/core/rsa.zig at eae944c.
+// Ported from gcp.zig src/core/rsa.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! RSA signing and verifying: RSASSA-PKCS1-v1_5 over SHA-256, the one
 //! scheme Google's token endpoint accepts for a service account's JWT
 //! assertion, and the PKCS#1 v1.5 and PSS schemes Cloud KMS signs with,

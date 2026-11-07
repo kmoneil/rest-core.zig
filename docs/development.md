@@ -67,20 +67,24 @@ docs/zig-std-workarounds.md says why.
 
 ## Where the code came from
 
-Most of this library is gcp.zig's `src/core`, moved here. Each file that
-came from there starts with a line naming the gcp.zig file and commit, so a
-fix made in either can be carried to the other.
+Most of this library is gcp.zig's `src/core`, moved here. Since gcp.zig's
+5aa9ba8 (2026-11-07), gcp.zig builds on rest-core and its own copies are
+gone, so this is their upstream now: each such file's first line still
+names the gcp.zig file and commit it came from ("Ported from"), as the
+table below does, and nothing is checked against gcp.zig any more.
 
-`zig build provenance` reads those lines and asks git, in the checkouts
-beside this one (gcp.zig at `../zig-gcp-pubsub`, yaml.zig at `../yaml.zig`;
-`zig build provenance -- --checkout gcp.zig=DIR` names another), what
+Two tools came from yaml.zig and still track it: their first line,
+`// From yaml.zig <path> at <commit>`, lets a fix made in either be
+carried to the other. `zig build provenance` reads those lines and asks
+git, in the checkouts beside this one (yaml.zig at `../yaml.zig`;
+`zig build provenance -- --checkout yaml.zig=DIR` names another), what
 changed in each source file since its recorded commit. It exits 0 when
 nothing did, 1 when something did, listing the commits, and 2 when a
 checkout or a commit is missing. To carry a fix: read the listed commits,
 make the same change here (or say in the commit why not), and move the
 file's first line, and its row below, to the source's new commit.
 
-| File here | From gcp.zig | At |
+| File here | Ported from gcp.zig | At |
 | --- | --- | --- |
 | tools/test_runner.zig | tools/test_runner.zig | eae944c |
 | src/owned.zig | src/core/owned.zig | eae944c |
@@ -144,6 +148,6 @@ and adds `pathOnOrigin`. Diagnostics.zig is errors.zig's with `status`
 named `code`, a request id and a correlation id, and `format`, which
 escapes control bytes.
 
-tools/security_catalog.zig came from yaml.zig (9c5e924), not gcp.zig, and
-tools/doc_examples.zig from yaml.zig too (aad9a5e), with a check of the
+tools/security_catalog.zig came from yaml.zig (7cd3941), not gcp.zig, and
+tools/doc_examples.zig from yaml.zig too (7cd3941), with a check of the
 documents' relative links added.

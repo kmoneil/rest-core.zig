@@ -1,4 +1,4 @@
-// From gcp.zig src/core/owned.zig at eae944c.
+// Ported from gcp.zig src/core/owned.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! `Owned(T)`: a call's result together with the memory that holds it.
 
 const std = @import("std");

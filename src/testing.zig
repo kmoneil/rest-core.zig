@@ -1,4 +1,4 @@
-// From gcp.zig src/core/testing.zig at eae944c, less FakeSigner and retryInfoBody, which stay Google's.
+// Ported from gcp.zig src/core/testing.zig at eae944c, less FakeSigner and retryInfoBody, which stay Google's. gcp.zig has built on this copy since its 5aa9ba8.
 //! Test helpers: a scripted fake transport and one that injects faults, a
 //! fake token provider, a loopback server, a fake clock, allocators that
 //! check wiping and refuse large blocks, and a runner for byte-driven

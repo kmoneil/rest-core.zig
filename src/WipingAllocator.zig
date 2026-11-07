@@ -1,4 +1,4 @@
-// From gcp.zig src/core/WipingAllocator.zig at eae944c.
+// Ported from gcp.zig src/core/WipingAllocator.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! An allocator that zeroes memory before giving it back to the allocator
 //! beneath it, for buffers that hold secrets: tokens, refresh tokens,
 //! client secrets, and bodies that carry them. Put an arena on top, and
