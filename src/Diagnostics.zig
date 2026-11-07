@@ -10,6 +10,10 @@
 //! request, as Azure's `x-ms-request-id`, for a support ticket, and the id
 //! a front end gave the operation as a whole, as Azure Resource Manager's
 //! `x-ms-correlation-request-id`, which its support asks for first.
+//!
+//! Not thread-safe: one call fills it at a time, so concurrent calls each
+//! need their own. It owns its bytes, copied in: nothing it hands out
+//! outlives it.
 
 const Diagnostics = @This();
 
@@ -65,6 +69,7 @@ pub fn correlationId(d: *const Diagnostics) []const u8 {
     return d.correlation_id_buffer[0..d.correlation_id_len];
 }
 
+/// Forgets the last failure, as a call that succeeds does.
 pub fn clear(d: *Diagnostics) void {
     d.* = .{};
 }

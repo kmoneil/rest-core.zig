@@ -25,7 +25,7 @@ const findHeader = @import("transport.zig").findHeader;
 const TokenProvider = @import("TokenProvider.zig");
 
 /// A `TokenProvider` that returns one token, or fails with one error, and
-/// counts how it is used.
+/// counts how it is used. Not thread-safe: its counts are plain fields.
 pub const FakeTokenProvider = struct {
     /// Returned, copied into the caller's arena, while `fail` is null.
     token: []const u8 = "ya29.fake-token",
@@ -44,6 +44,8 @@ pub const FakeTokenProvider = struct {
     first_scope_buffer: [128]u8 = undefined,
     first_scope_len: usize = 0,
 
+    /// The provider; it points at this struct, which must not move while
+    /// in use.
     pub fn provider(self: *FakeTokenProvider) TokenProvider {
         return .{ .ptr = self, .vtable = &.{
             .getToken = getToken,
@@ -128,7 +130,9 @@ test "FakeClock: cancel protection is kept, and a blocked sleep is not canceled"
 /// A `Transport` that records every request and answers from a script.
 /// What `HttpTransport` refuses before it connects (`transport.checkRequest`)
 /// is refused here too, unrecorded and with the script where it was, so a
-/// test never passes a request production would not send.
+/// test never passes a request production would not send. Not
+/// thread-safe: one task sends through it. What it answers lives in the
+/// arena a send was given; what it records, in its `gpa`, until `deinit`.
 pub const FakeTransport = struct {
     gpa: Allocator,
     script: []const Reply,
@@ -140,11 +144,13 @@ pub const FakeTransport = struct {
     /// upload asserts on `body_len` and `body_crc32` instead.
     max_recorded_body: usize = 64 * 1024,
 
+    /// One scripted answer: a response, or a transport error.
     pub const Reply = union(enum) {
         respond: Canned,
         fail: TransportError,
     };
 
+    /// A scripted response.
     pub const Canned = struct {
         status: u16 = 200,
         /// Never delivered for a HEAD request, nor with a 1xx, 204 or 304,
@@ -199,10 +205,13 @@ pub const FakeTransport = struct {
         }
     };
 
+    /// A transport that answers each request with the next of `script`,
+    /// recording requests in `gpa`.
     pub fn init(gpa: Allocator, script: []const Reply) FakeTransport {
         return .{ .gpa = gpa, .script = script };
     }
 
+    /// Frees what it recorded.
     pub fn deinit(self: *FakeTransport) void {
         for (self.requests.items) |r| {
             self.gpa.free(r.url);
@@ -224,6 +233,8 @@ pub const FakeTransport = struct {
         self.* = undefined;
     }
 
+    /// The transport; it points at this struct, which must not move while
+    /// in use.
     pub fn transport(self: *FakeTransport) Transport {
         return .{ .ptr = self, .vtable = &.{ .send = send, .sendStream = sendStream } };
     }
@@ -464,7 +475,8 @@ pub const FakeTransport = struct {
 /// closes with the body unfinished, so the server sees what a failed network
 /// would show it, and a test proves recovery against a real server rather
 /// than a fake's idea of one. It can also record every exchange, so a test
-/// can check what went over the wire.
+/// can check what went over the wire. Not thread-safe: one task sends
+/// through it. What it records lives in `record`, until `deinit`.
 pub const FaultTransport = struct {
     inner: Transport,
     /// The faults to inject. Each applies to one request at most.
@@ -478,7 +490,9 @@ pub const FaultTransport = struct {
     exchanges: std.ArrayList(Exchange) = .empty,
 
     /// One request to break: the `skip`+1th that matches. When two faults
-    /// match the same request, the earlier one in the plan applies to it.
+    /// match the same request, the earlier one in the plan applies to it,
+    /// and a later one whose turn that was loses it: it never fires, and
+    /// its `seen` counts on.
     pub const Fault = struct {
         method: Method,
         /// Only requests whose URL contains this; empty matches any URL.
@@ -495,6 +509,7 @@ pub const FaultTransport = struct {
         fired: bool = false,
     };
 
+    /// What a fault does to the request it applies to.
     pub const Action = union(enum) {
         /// Send the first N bytes of a streaming request's body, then close
         /// the connection. Only a request whose body is longer than N
@@ -511,6 +526,7 @@ pub const FaultTransport = struct {
         lose_response,
     };
 
+    /// A function, with its context, that `after_fault` runs.
     pub const Hook = struct {
         context: *anyopaque,
         run: *const fn (context: *anyopaque, fault: *const Fault) void,
@@ -545,6 +561,7 @@ pub const FaultTransport = struct {
         }
     };
 
+    /// Frees the recorded exchanges.
     pub fn deinit(self: *FaultTransport) void {
         if (self.record) |gpa| {
             for (self.exchanges.items) |e| {
@@ -559,6 +576,8 @@ pub const FaultTransport = struct {
         self.* = undefined;
     }
 
+    /// The transport; it points at this struct, which must not move while
+    /// in use.
     pub fn transport(self: *FaultTransport) Transport {
         return .{ .ptr = self, .vtable = &.{ .send = send, .sendStream = sendStream } };
     }
@@ -819,8 +838,16 @@ pub const FaultTransport = struct {
     };
 };
 
-/// Accepts connections on 127.0.0.1 and answers each request with the next
+/// Accepts connections on loopback and answers each request with the next
 /// scripted raw HTTP response. Records the raw requests it saw.
+///
+/// It runs on a task of its own: `start` it, run `run` with
+/// `io.concurrent`, and before `deinit` either `await` that task or
+/// `cancel` it, in that order (`defer server.deinit(io)` first, then
+/// `defer _ = serving.cancel(io) catch {}`). The server task writes its
+/// fields as it goes, so a test reads them (`seen_count`, `request`,
+/// `connections`, `pause_timed_out`) only after the task is awaited or
+/// canceled. Not thread-safe otherwise.
 pub const ScriptedServer = struct {
     server: std.Io.net.Server,
     port: u16,
@@ -851,10 +878,13 @@ pub const ScriptedServer = struct {
     seen_count: usize = 0,
     connections: usize = 0,
 
+    /// A server on 127.0.0.1 and a free port, answering with `replies`.
     pub fn start(io: std.Io, replies: []const []const u8) !ScriptedServer {
         return startOn(io, .{ .ip4 = .loopback(0) }, replies);
     }
 
+    /// A server on `address`, port 0 for a free one, answering with
+    /// `replies`.
     pub fn startOn(io: std.Io, address: std.Io.net.IpAddress, replies: []const []const u8) !ScriptedServer {
         const server = try address.listen(io, .{ .reuse_address = true });
         return .{
@@ -864,12 +894,16 @@ pub const ScriptedServer = struct {
         };
     }
 
+    /// Closes the listening socket, after `run`'s task is awaited or
+    /// canceled.
     pub fn deinit(s: *ScriptedServer, io: std.Io) void {
         s.server.deinit(io);
     }
 
+    /// `http://` and the address the server is bound to, with `path` after
+    /// it, written into `buf`.
     pub fn url(s: *const ScriptedServer, buf: []u8, path: []const u8) []const u8 {
-        return std.fmt.bufPrint(buf, "http://127.0.0.1:{d}{s}", .{ s.port, path }) catch
+        return std.fmt.bufPrint(buf, "http://{f}{s}", .{ s.server.socket.address, path }) catch
             @panic("ScriptedServer.url: the buffer is too small for the URL");
     }
 
@@ -990,12 +1024,15 @@ pub const ScriptedServer = struct {
 /// An allocator that counts the blocks that were not all zeros when freed,
 /// to test code that must wipe secrets. Such code should free with `rawFree`
 /// after wiping: `Allocator.free` overwrites memory with a debug pattern in
-/// safe builds, which would hide a missing wipe.
+/// safe builds, which would hide a missing wipe. Not thread-safe: its
+/// counts are plain fields.
 pub const WipeChecker = struct {
     child: Allocator,
     frees: usize = 0,
     unwiped: usize = 0,
 
+    /// The allocator; it points at this struct, which must not move while
+    /// in use.
     pub fn allocator(self: *WipeChecker) Allocator {
         return .{ .ptr = self, .vtable = &.{
             .alloc = alloc,
@@ -1034,13 +1071,16 @@ pub const WipeChecker = struct {
 /// allocation after the first one it fails, so a later allocation always
 /// reports `OutOfMemory`, and code that swallows the first failure passes
 /// the sweep. This fails only the large blocks, such as a compressor's
-/// state, and lets everything else through.
+/// state, and lets everything else through. Not thread-safe: its count is
+/// a plain field.
 pub const RefuseOver = struct {
     child: Allocator,
     limit: usize,
     /// Allocations refused so far.
     refused: usize = 0,
 
+    /// The allocator; it points at this struct, which must not move while
+    /// in use.
     pub fn allocator(self: *RefuseOver) Allocator {
         return .{ .ptr = self, .vtable = &.{
             .alloc = alloc,
@@ -1098,6 +1138,7 @@ test "RefuseOver: refuses blocks over the limit, and only those" {
 
 /// An `Io` whose clock, sleep and randomness are simulated. Every other
 /// operation fails, as in `std.Io.failing`, so a test cannot touch the network.
+/// Not thread-safe: one task sleeps on it.
 pub const FakeClock = struct {
     now_ns: i96 = 0,
     /// Every sleep requested, in nanoseconds, up to the array length.
@@ -1113,6 +1154,8 @@ pub const FakeClock = struct {
     /// cleanup after a cancel blocks it, and a blocked sleep is not canceled.
     cancel_protection: std.Io.CancelProtection = .unblocked,
 
+    /// The `Io`; it points at this struct, which must not move while in
+    /// use.
     pub fn io(self: *FakeClock) std.Io {
         return .{ .userdata = self, .vtable = &vtable };
     }
@@ -1175,21 +1218,25 @@ pub const FakeClock = struct {
 };
 
 /// Derives structured values from arbitrary bytes. Reads past the end yield
-/// zeros, so every input, including the empty one, is valid.
+/// zeros, so every input, including the empty one, is valid. Not
+/// thread-safe; what it returns points into the bytes it was given.
 pub const ByteGen = struct {
     bytes: []const u8,
     pos: usize = 0,
 
+    /// Values from `bytes`, which must outlive it.
     pub fn init(bytes: []const u8) ByteGen {
         return .{ .bytes = bytes };
     }
 
+    /// The next byte, or 0 past the end.
     pub fn byte(g: *ByteGen) u8 {
         if (g.pos >= g.bytes.len) return 0;
         defer g.pos += 1;
         return g.bytes[g.pos];
     }
 
+    /// The next byte's low bit.
     pub fn boolean(g: *ByteGen) bool {
         return g.byte() & 1 == 1;
     }
@@ -1227,6 +1274,7 @@ pub const ByteGen = struct {
         return options[g.intRange(usize, 0, options.len - 1)];
     }
 
+    /// Whatever is left of the bytes.
     pub fn rest(g: *ByteGen) []const u8 {
         return g.take(g.bytes.len);
     }
@@ -1267,6 +1315,8 @@ pub inline fn repeat(comptime s: []const u8, comptime n: usize) *const [s.len * 
 /// The longest input a property sees under the coverage-guided fuzzer.
 pub const max_fuzz_input = 4096;
 
+/// How `fuzzBytes` runs a property: its seed inputs, and how many random
+/// ones besides.
 pub const FuzzOptions = struct {
     /// Inputs that always run. Add every input the fuzzer finds a bug with,
     /// so the fix stays covered.

@@ -20,9 +20,12 @@ pub fn escaped(text: []const u8) Escaped {
     return .{ .text = text };
 }
 
+/// What `escaped` returns: a `{f}` argument that writes its text with each
+/// control byte as `\xNN`. A value; thread-safe.
 pub const Escaped = struct {
     text: []const u8,
 
+    /// Writes the text, its control bytes escaped.
     pub fn format(e: Escaped, w: *std.Io.Writer) std.Io.Writer.Error!void {
         var start: usize = 0;
         for (e.text, 0..) |c, i| {
@@ -35,16 +38,20 @@ pub const Escaped = struct {
     }
 };
 
-/// The logging functions for one module's scope.
+/// The logging functions for one module's scope. Thread-safe: std.log's
+/// default writer locks stderr, and a test build's capture records with
+/// atomics.
 pub fn Scoped(comptime scope: @EnumLiteral()) type {
     return struct {
         const log = std.log.scoped(scope);
 
+        /// One line at debug level: in a test build, into `capture`.
         pub fn debug(comptime format: []const u8, args: anytype) void {
             if (builtin.is_test) return capture.record("debug", format, args);
             log.debug(format, args);
         }
 
+        /// One line at warn level: in a test build, into `capture`.
         pub fn warn(comptime format: []const u8, args: anytype) void {
             if (builtin.is_test) return capture.record("warn", format, args);
             log.warn(format, args);
@@ -81,12 +88,16 @@ pub fn Scoped(comptime scope: @EnumLiteral()) type {
                 _ = @atomicRmw(usize, &dropped, .Add, 1, .monotonic);
             }
 
+            /// Forgets every line, for the next test. Not while another
+            /// task is logging to this scope.
             pub fn reset() void {
                 len = 0;
                 lines = 0;
                 dropped = 0;
             }
 
+            /// The lines recorded since `reset`, whole lines only. Valid
+            /// until the next `reset`.
             pub fn text() []const u8 {
                 return buffer[0..len];
             }

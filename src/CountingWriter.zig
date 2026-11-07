@@ -3,6 +3,8 @@
 //! writer. A streaming download wraps the caller's writer in one, so that
 //! when a connection drops mid-body the resume request knows which offset
 //! was reached.
+//!
+//! Not thread-safe: one task writes through it.
 
 const std = @import("std");
 const CountingWriter = @This();
@@ -16,6 +18,7 @@ count: u64 = 0,
 /// buffer belongs to whoever owns it.
 writer: std.Io.Writer,
 
+/// A writer that passes everything to `out`, counting the bytes.
 pub fn init(out: *std.Io.Writer) CountingWriter {
     return .{ .out = out, .writer = .{ .buffer = &.{}, .vtable = &.{ .drain = drain } } };
 }

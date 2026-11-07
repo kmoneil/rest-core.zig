@@ -6,6 +6,8 @@
 const std = @import("std");
 const test_util = @import("testing.zig");
 
+/// How many attempts a call makes, and the full-jitter backoff between
+/// them. A value; thread-safe.
 pub const RetryPolicy = struct {
     /// Attempts in total, including the first. 1 disables retries.
     max_attempts: u8 = 5,
@@ -14,6 +16,8 @@ pub const RetryPolicy = struct {
     /// At least 1.
     multiplier: f32 = 2.0,
 
+    /// Whether the policy makes sense: at least one attempt, and a finite
+    /// multiplier of at least 1.
     pub fn isValid(p: RetryPolicy) bool {
         return p.max_attempts >= 1 and std.math.isFinite(p.multiplier) and p.multiplier >= 1.0;
     }

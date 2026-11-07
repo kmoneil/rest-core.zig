@@ -17,6 +17,7 @@ pub const transport = @import("transport.zig");
 /// The request loop every module of a cloud runs: credentials, retries,
 /// the server's delay, and its refusal read by the cloud's hook.
 pub const loop = @import("loop.zig");
+/// `loop.Engine`.
 pub const Engine = loop.Engine;
 
 /// Details of the most recent failed call: status, the cloud's code, the
@@ -25,9 +26,12 @@ pub const Diagnostics = @import("Diagnostics.zig");
 
 /// The seam through which a cloud's modules get bearer tokens.
 pub const TokenProvider = @import("TokenProvider.zig");
+/// A provider of one fixed token, such as a CLI prints.
 pub const StaticToken = @import("StaticToken.zig");
 
+/// How many attempts a call makes, and the backoff between them.
 pub const RetryPolicy = @import("retry.zig").RetryPolicy;
+/// Whether a transport failure is worth another attempt.
 pub const isRetryable = @import("retry.zig").isRetryable;
 
 /// A refused response's own retry delay: `Retry-After`, `retry-after-ms`
@@ -46,6 +50,7 @@ pub const rsa = @import("rsa.zig");
 /// Base64, as JSON APIs carry bytes fields.
 pub const base64 = @import("base64.zig");
 
+/// A result and the arena that holds it, freed by one `deinit`.
 pub const Owned = @import("owned.zig").Owned;
 
 /// What an update does to a setting that can be taken away: `.keep`,

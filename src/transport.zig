@@ -15,6 +15,7 @@ const http = std.http;
 /// answer, a refusal's included, as Blob Storage's `x-ms-error-code` is.
 pub const Method = enum { GET, PUT, POST, DELETE, PATCH, HEAD };
 
+/// One request for `Transport.send`, its response buffered. A value.
 pub const Request = struct {
     method: Method,
     /// Absolute URL.
@@ -113,6 +114,7 @@ pub const ContentType = enum {
     /// `application/x-www-form-urlencoded`, as OAuth token endpoints take.
     form,
 
+    /// The Content-Type value sent for it.
     pub fn mediaType(ct: ContentType) []const u8 {
         return switch (ct) {
             .json => "application/json",
@@ -121,6 +123,8 @@ pub const ContentType = enum {
     }
 };
 
+/// What `Transport.send` returns. Its body and headers live in the arena
+/// given to `send`, and go with it.
 pub const Response = struct {
     /// HTTP status code. Non-2xx statuses are responses, not transport errors.
     status: u16,
@@ -170,6 +174,7 @@ pub const StreamRequest = struct {
     /// headers live in the arena passed to the send.
     head_out: ?*?Head = null,
 
+    /// A response's status and headers, as `head_out` hands them out.
     pub const Head = struct {
         status: u16,
         headers: []const Header,
@@ -180,6 +185,7 @@ pub const StreamRequest = struct {
         }
     };
 
+    /// The request body: none, segments, or a reader of a known length.
     pub const Body = union(enum) {
         /// No body and no Content-Length, as GET, HEAD and DELETE send.
         /// POST, PUT and PATCH send an empty one, `Content-Length: 0`, since
@@ -197,6 +203,7 @@ pub const StreamRequest = struct {
         stream: struct { reader: *std.Io.Reader, len: u64 },
     };
 
+    /// Where a success's body goes.
     pub const Sink = union(enum) {
         /// Buffer the body into the arena, bounded by the transport's
         /// response limit.
@@ -207,6 +214,8 @@ pub const StreamRequest = struct {
         writer: *std.Io.Writer,
     };
 
+    /// What Accept-Encoding offers, and whether a compressed body is
+    /// decoded.
     pub const AcceptEncoding = enum {
         /// Ask for plain bytes, as a download whose bytes must match a
         /// checksum wants.
@@ -221,6 +230,8 @@ pub const StreamRequest = struct {
     };
 };
 
+/// What `Transport.sendStream` returns. Its body, when buffered, and its
+/// headers live in the arena given to `sendStream`, and go with it.
 pub const StreamResponse = struct {
     /// HTTP status code. Non-2xx statuses are responses, not transport
     /// errors; 308 is how a resumable upload answers a chunk, so it must
@@ -284,10 +295,13 @@ pub const Error = error{
 };
 
 /// A way to send one HTTP request, in the `std.mem.Allocator` interface shape.
+/// Thread-safety is the implementation's: `HttpTransport` is not
+/// thread-safe, nor are `testing`'s fakes.
 pub const Transport = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
 
+    /// What a transport implements.
     pub const VTable = struct {
         /// Sends `req` and reads the whole response. The response body is
         /// allocated in `arena`.
@@ -297,6 +311,7 @@ pub const Transport = struct {
         sendStream: ?*const fn (ptr: *anyopaque, req: StreamRequest, arena: Allocator) StreamError!StreamResponse = null,
     };
 
+    /// Sends `req` and reads its whole response into `arena`.
     pub fn send(self: Transport, req: Request, arena: Allocator) Error!Response {
         return self.vtable.send(self.ptr, req, arena);
     }
@@ -318,22 +333,27 @@ pub const default_max_response_bytes = 32 * 1024 * 1024;
 pub const tls_clock_max_age: std.Io.Duration = .fromSeconds(60 * 60);
 
 /// A `Transport` over `std.http.Client`: HTTP/1.1, keep-alive, one connection
-/// pool. Not safe to share across concurrent tasks.
+/// pool. Not thread-safe: one task sends through it at a time. What a send
+/// returns lives in the arena it was given.
 pub const HttpTransport = struct {
     client: http.Client,
     /// Borrowed; must outlive the transport.
     user_agent: []const u8,
     max_response_bytes: usize = default_max_response_bytes,
 
+    /// A transport whose connections and TLS state live in `gpa`.
     pub fn init(gpa: Allocator, io: std.Io, user_agent: []const u8) HttpTransport {
         return .{ .client = .{ .allocator = gpa, .io = io }, .user_agent = user_agent };
     }
 
+    /// Closes its connections and frees its pool.
     pub fn deinit(self: *HttpTransport) void {
         self.client.deinit();
         self.* = undefined;
     }
 
+    /// The transport; it points at this struct, which must not move while
+    /// in use.
     pub fn transport(self: *HttpTransport) Transport {
         return .{ .ptr = self, .vtable = &.{ .send = send, .sendStream = sendStream } };
     }
@@ -955,7 +975,8 @@ fn bodyError(
 /// replaces std.http's decoder, which panics with an integer overflow on a
 /// chunk size near 2^64 and reads any letter as a hex digit. Sizes are
 /// bounded before use, and reading stops exactly after the terminating chunk
-/// and trailers, where the next response on the connection begins.
+/// and trailers, where the next response on the connection begins. Not
+/// thread-safe: one task reads through it.
 pub const Dechunker = struct {
     in: *std.Io.Reader,
     interface: std.Io.Reader,
@@ -1456,7 +1477,10 @@ test "HttpTransport reaches IPv6 literal hosts, as an emulator at [::1]:8085" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var buf: [64]u8 = undefined;
-    const url = try std.fmt.bufPrint(&buf, "http://[::1]:{d}/v1/x", .{server.port});
+    // ScriptedServer.url writes the address it is bound to, brackets and all.
+    const url = server.url(&buf, "/v1/x");
+    var want: [64]u8 = undefined;
+    try testing.expectEqualStrings(try std.fmt.bufPrint(&want, "http://[::1]:{d}/v1/x", .{server.port}), url);
     try testing.expectEqualStrings("{}", (try ht.transport().send(.{ .method = .GET, .url = url }, arena.allocator())).body);
     try testing.expectEqualStrings("[]", (try ht.transport().send(.{ .method = .GET, .url = url }, arena.allocator())).body);
     try serving.await(io);

@@ -6,11 +6,13 @@
 const std = @import("std");
 const test_util = @import("testing.zig");
 
+/// `parse`'s one error: text that is not an RFC 3339 instant in range.
 pub const ParseError = error{InvalidTimestamp};
 
 /// The range `google.protobuf.Timestamp` allows, and `format` writes:
 /// 0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z.
 pub const min: std.Io.Timestamp = .{ .nanoseconds = -62_135_596_800 * std.time.ns_per_s };
+/// The last instant `format` writes and `parse` takes.
 pub const max: std.Io.Timestamp = .{ .nanoseconds = 253_402_300_799 * std.time.ns_per_s + 999_999_999 };
 
 /// The longest text `format` writes: `9999-12-31T23:59:59.999999999Z`.

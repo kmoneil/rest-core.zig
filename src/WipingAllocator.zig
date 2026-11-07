@@ -7,6 +7,8 @@
 //! It never shrinks or moves an allocation in place, since either would
 //! hand bytes back unwiped. A caller that shrinks or moves falls back to
 //! allocating, copying and freeing, and the free wipes.
+//!
+//! Thread-safe when its child allocator is: it keeps no state of its own.
 
 const WipingAllocator = @This();
 
@@ -17,6 +19,7 @@ const test_util = @import("testing.zig");
 
 child: Allocator,
 
+/// Wipes what it frees before handing it to `child`.
 pub fn init(child: Allocator) WipingAllocator {
     return .{ .child = child };
 }
