@@ -866,10 +866,15 @@ pub const ScriptedServer = struct {
     }
 
     pub fn url(s: *const ScriptedServer, buf: []u8, path: []const u8) []const u8 {
-        return std.fmt.bufPrint(buf, "http://127.0.0.1:{d}{s}", .{ s.port, path }) catch unreachable;
+        return std.fmt.bufPrint(buf, "http://127.0.0.1:{d}{s}", .{ s.port, path }) catch
+            @panic("ScriptedServer.url: the buffer is too small for the URL");
     }
 
+    /// The raw request in slot `index`, as much of it as the slot holds.
+    /// The slots are reused past the eighth request, so after more than
+    /// eight, `index` names request `index + 8k` for the latest such k.
     pub fn request(s: *const ScriptedServer, index: usize) []const u8 {
+        if (index >= @min(s.seen_count, s.seen.len)) @panic("ScriptedServer: no request recorded at that index");
         return s.seen[index][0..s.seen_len[index]];
     }
 
@@ -885,49 +890,73 @@ pub const ScriptedServer = struct {
         while (next < s.replies.len or s.hang) {
             const stream = try s.server.accept(io);
             defer stream.close(io);
-            defer if (s.linger_ms > 0) io.sleep(.fromMilliseconds(s.linger_ms), .awake) catch {};
             s.connections += 1;
-            var read_buf: [4096]u8 = undefined;
-            var reader = stream.reader(io, &read_buf);
-            var write_buf: [256]u8 = undefined;
-            var writer = stream.writer(io, &write_buf);
-            var served: usize = 0;
-            while (served < s.per_connection and (next < s.replies.len or s.hang)) : (served += 1) {
-                try s.readRequest(&reader.interface);
-                if (s.hang) {
-                    // Wait until the client gives up; the read fails or ends then.
-                    _ = reader.interface.discardRemaining() catch {};
-                    return;
-                }
-                var reply = s.replies[next];
-                if (next == 0) if (s.pause) |p| {
-                    try writer.interface.writeAll(reply[0..p.after]);
-                    try writer.interface.flush();
-                    reply = reply[p.after..];
-                    var waited: u32 = 0;
-                    while (!p.open.load(.acquire)) : (waited += 1) {
-                        if (waited == 200) {
-                            s.pause_timed_out = true;
-                            break;
-                        }
-                        try io.sleep(.fromMilliseconds(10), .awake);
-                    }
-                };
-                try writer.interface.writeAll(reply);
-                try writer.interface.flush();
-                next += 1;
-            }
+            if (!try s.serve(io, stream, &next)) return;
+            // Held open after its last reply. A cancel here ends the run:
+            // swallowed, the run would go back to accept and wait for good.
+            if (s.linger_ms > 0) try io.sleep(.fromMilliseconds(s.linger_ms), .awake);
         }
     }
 
-    fn readRequest(s: *ScriptedServer, r: *std.Io.Reader) !void {
+    /// One connection's requests and replies, up to `per_connection`.
+    /// False when the run is over: a hanging server's client gave up.
+    fn serve(s: *ScriptedServer, io: std.Io, stream: std.Io.net.Stream, next: *usize) !bool {
+        // Room for a head line of 16 KiB, a long bearer token's with it.
+        var read_buf: [16 * 1024]u8 = undefined;
+        var reader = stream.reader(io, &read_buf);
+        var write_buf: [256]u8 = undefined;
+        var writer = stream.writer(io, &write_buf);
+        var served: usize = 0;
+        while (served < s.per_connection and (next.* < s.replies.len or s.hang)) : (served += 1) {
+            // A client that closes before its next request ends this
+            // connection, and the next is accepted; `connections` shows it.
+            if (!try s.readRequest(&reader.interface)) return true;
+            if (s.hang) {
+                // Wait until the client gives up; the read fails or ends then.
+                _ = reader.interface.discardRemaining() catch {};
+                return false;
+            }
+            try s.reply(io, &writer.interface, next.*);
+            next.* += 1;
+        }
+        return true;
+    }
+
+    /// Writes reply `index`, held at `pause` when it is the first.
+    fn reply(s: *ScriptedServer, io: std.Io, w: *std.Io.Writer, index: usize) !void {
+        var bytes = s.replies[index];
+        if (index == 0) if (s.pause) |p| {
+            try w.writeAll(bytes[0..p.after]);
+            try w.flush();
+            bytes = bytes[p.after..];
+            var waited: u32 = 0;
+            while (!p.open.load(.acquire)) : (waited += 1) {
+                if (waited == 200) {
+                    s.pause_timed_out = true;
+                    break;
+                }
+                try io.sleep(.fromMilliseconds(10), .awake);
+            }
+        };
+        try w.writeAll(bytes);
+        try w.flush();
+    }
+
+    /// Reads one request into the next slot, its head and body each kept
+    /// to what the slot holds. False when the client closed the connection
+    /// before the request began.
+    fn readRequest(s: *ScriptedServer, r: *std.Io.Reader) !bool {
         const slot = s.seen_count % s.seen.len;
         var len: usize = 0;
         var content_length: u64 = 0;
         while (true) {
-            const line = try r.takeDelimiterInclusive('\n');
-            @memcpy(s.seen[slot][len..][0..line.len], line);
-            len += line.len;
+            const line = r.takeDelimiterInclusive('\n') catch |err| switch (err) {
+                error.EndOfStream => if (len == 0 and r.buffered().len == 0) return false else return err,
+                else => return err,
+            };
+            const keep_line = @min(line.len, s.seen[slot].len - len);
+            @memcpy(s.seen[slot][len..][0..keep_line], line[0..keep_line]);
+            len += keep_line;
             if (std.ascii.startsWithIgnoreCase(line, "content-length:")) {
                 const value = std.mem.trim(u8, line["content-length:".len..], " \r\n");
                 content_length = try std.fmt.parseInt(u64, value, 10);
@@ -951,6 +980,7 @@ pub const ScriptedServer = struct {
         s.seen_body_len[slot] = content_length;
         s.seen_body_crc[slot] = crc.final();
         s.seen_count += 1;
+        return true;
     }
 };
 
@@ -2153,6 +2183,70 @@ test "FakeTransport records no body for a GET, HEAD or DELETE, as none is sent" 
         _ = try fake.transport().send(.{ .method = method, .url = "http://x/v1/a", .body = "x" }, arena.allocator());
     }
     for (0..3) |i| try std.testing.expectEqual(null, (try fake.request(i)).body);
+}
+
+test "ScriptedServer: a head longer than its slot is kept to the slot, and answered" {
+    // An Entra ID bearer runs 1.5 to 2.5 KiB; this one makes a 4 KiB line.
+    const io = std.testing.io;
+    var server: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"});
+    defer server.deinit(io);
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var http: HttpTransport = .init(std.testing.allocator, io, "t");
+    defer http.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const bearer: [4096]u8 = @splat('t');
+    var url_buf: [64]u8 = undefined;
+    const res = try http.transport().send(.{ .method = .GET, .url = server.url(&url_buf, "/v1/a"), .bearer = &bearer }, arena.allocator());
+    try std.testing.expectEqual(200, res.status);
+    try serving.await(io);
+    try std.testing.expectEqual(server.seen[0].len, server.request(0).len);
+}
+
+test "ScriptedServer: a cancel while it lingers ends the run" {
+    const io = std.testing.io;
+    var server: ScriptedServer = try .start(io, &.{ "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" });
+    defer server.deinit(io);
+    server.linger_ms = 60_000;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    var http: HttpTransport = .init(std.testing.allocator, io, "t");
+    defer http.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var url_buf: [64]u8 = undefined;
+    _ = try http.transport().send(.{ .method = .GET, .url = server.url(&url_buf, "/v1/a") }, arena.allocator());
+    // A reply is left, so a swallowed cancel would go back to accept and
+    // wait there for good.
+    const started = std.Io.Clock.awake.now(io);
+    try std.testing.expectError(error.Canceled, serving.cancel(io));
+    try std.testing.expect(started.untilNow(io, .awake).toMilliseconds() < 5_000);
+}
+
+test "ScriptedServer: a client that closes before its next request ends that connection, not the run" {
+    const io = std.testing.io;
+    const ok = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+    var server: ScriptedServer = try .start(io, &.{ ok, ok });
+    defer server.deinit(io);
+    server.per_connection = 2;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var url_buf: [64]u8 = undefined;
+    const url = server.url(&url_buf, "/v1/a");
+    {
+        // Closing the transport closes its pooled connection, one reply in.
+        var first: HttpTransport = .init(std.testing.allocator, io, "t");
+        defer first.deinit();
+        _ = try first.transport().send(.{ .method = .GET, .url = url }, arena.allocator());
+    }
+    var second: HttpTransport = .init(std.testing.allocator, io, "t");
+    defer second.deinit();
+    const res = try second.transport().send(.{ .method = .GET, .url = url, .timeout_ms = 5_000 }, arena.allocator());
+    try std.testing.expectEqual(200, res.status);
+    try serving.await(io);
+    try std.testing.expectEqual(2, server.connections);
 }
 
 test "FakeTransport: a buffered reply cut short fails, as its doc says" {

@@ -26,6 +26,16 @@ Until 1.0, minor versions may break the API; each entry says how.
   recorded with none. And `send` ignored `cut_after`, though `Canned`
   says a buffered reply cut short fails; it returns `cut_error` now.
   Breaks: a test that read a 204's or 304's body from the fake.
+- Fixed: `testing.ScriptedServer` copied a request's head into its
+  2 KiB slot with no bound, so a long bearer token (an Entra ID JWT runs
+  past 2 KiB) panicked in a safe build and wrote past the slot in
+  ReleaseFast; the head is kept to the slot like the body, and a head
+  line may run to 16 KiB. It never hangs a test: a cancel while it
+  lingers ends the run (the linger swallowed it, and the run went back
+  to accept for good), and a client that closes before its next request
+  ends that connection, not the run, so the next connection is served.
+  `request()` and `url()` panic with a message where they read out of
+  bounds or reached `unreachable`.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
