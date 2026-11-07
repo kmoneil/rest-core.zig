@@ -144,6 +144,6 @@ and adds `pathOnOrigin`. Diagnostics.zig is errors.zig's with `status`
 named `code`, a request id and a correlation id, and `format`, which
 escapes control bytes.
 
-tools/security_catalog.zig came from yaml.zig (9fe87e9), not gcp.zig, and
+tools/security_catalog.zig came from yaml.zig (9c5e924), not gcp.zig, and
 tools/doc_examples.zig from yaml.zig too (aad9a5e), with a check of the
 documents' relative links added.
