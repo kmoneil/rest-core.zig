@@ -67,6 +67,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   `Diagnostics` describing the failure before it (an HTTP 503, say),
   though the call returned `error.Canceled` and `Diagnostics` says a
   cancellation has no status. It says Canceled now.
+- Fixed: in a test build, `logging.Scoped(...).capture.text()` past its
+  64 KiB returned the whole buffer, its tail bytes never written in that
+  test, so a "never contains" check could fail, or a "contains" one
+  pass, on stale bytes. A line that does not fit now takes no room, and
+  `capture.dropped` counts such lines.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
