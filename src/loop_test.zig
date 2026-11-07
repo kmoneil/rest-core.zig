@@ -964,21 +964,43 @@ test "wipe: a failed attempt's body is wiped before the next attempt" {
 }
 
 test "wipe: the bearer token does not outlive the call" {
+    // Over the real transport, which formats `Bearer <token>` into the
+    // arena it is given, the caller's response arena: a fake that records
+    // the token elsewhere would never show that copy.
+    const io = testing.io;
     const token = "ya29.a0-wiped-token-0123456789";
+    var server: test_util.ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"});
+    defer server.deinit(io);
+    var serving = try io.concurrent(test_util.ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var http: transport.HttpTransport = .init(testing.allocator, io, "t");
+    defer http.deinit();
+
     var h: H = undefined;
-    h.init(&.{ok});
+    h.init(&.{});
     defer h.deinit();
     h.token.token = token;
-
-    // The engine's own scratch memory comes from this allocator.
-    var backing: [64 * 1024]u8 = @splat(0);
-    var fba: std.heap.FixedBufferAllocator = .init(&backing);
+    // The engine's own scratch memory, and the caller's response arena,
+    // each on a buffer searched while the caller still holds the result.
+    var scratch_backing: [64 * 1024]u8 = @splat(0);
+    var scratch_fba: std.heap.FixedBufferAllocator = .init(&scratch_backing);
+    var response_backing: [16 * 1024]u8 = @splat(0);
+    var response_fba: std.heap.FixedBufferAllocator = .init(&response_backing);
+    var response: std.heap.ArenaAllocator = .init(response_fba.allocator());
+    defer response.deinit();
     var e = h.engine();
-    e.gpa = fba.allocator();
-    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things", .wipe = true });
-    try testing.expectEqual(null, std.mem.indexOf(u8, &backing, token));
+    e.gpa = scratch_fba.allocator();
+    e.transport = http.transport();
+    var base: [64]u8 = undefined;
+    e.base_url = server.url(&base, "");
+
+    const body = try e.execute(&response, .{ .method = .GET, .path = "/v1/things", .wipe = true });
+    try testing.expectEqualStrings("{}", body);
+    try testing.expectEqual(null, std.mem.indexOf(u8, &scratch_backing, token));
+    try testing.expectEqual(null, std.mem.indexOf(u8, &response_backing, token));
     // The request really did carry it.
-    try testing.expectEqualStrings(token, (try h.fake.request(0)).bearer.?);
+    try serving.await(io);
+    try testing.expect(std.mem.indexOf(u8, server.request(0), "Bearer " ++ token) != null);
 }
 
 test "error_body_out: the last failed response's body, null on success and with no response" {

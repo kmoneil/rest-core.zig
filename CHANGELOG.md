@@ -18,6 +18,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   `error.Canceled` too, so a widened one sent the call again. The
   transport returns `error.Canceled` there now, and the loop never
   retries it, whatever `retryable` says (security catalog RETRY-04).
+- Fixed: `Call.wipe` left the bearer token readable after the call.
+  `HttpTransport` formats `Bearer <token>` into the arena it is given,
+  which `execute` passes as the caller's response arena, so the token
+  sat beside the result for as long as the caller kept it. The transport
+  zeroes that header once the request is sent. std's own copy, in its
+  pooled connection's write buffer, is out of reach; `wipe`'s doc says
+  so (security catalog SECRET-05).
 
 ## 0.2.1 (2026-11-06)
 
