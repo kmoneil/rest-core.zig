@@ -2,7 +2,7 @@
 # written. gnarl --check fails a function that is new and over one, or
 # above its number here; gnarl --update-baseline rewrites this file.
 # path, name, cyclomatic, cognitive, lines, nesting, params, params_weighted
-src/rsa.zig	PublicKey.fromSpki	27	24	28	1	1	1
+src/rsa.zig	PublicKey.fromSpki	23	19	25	1	1	1
 src/timestamp.zig	parse	25	30	47	3	1	1
 src/transport.zig	Dechunker.stream	13	19	16	3	3	3
 src/transport.zig	mapError	20	13	55	3	2	2

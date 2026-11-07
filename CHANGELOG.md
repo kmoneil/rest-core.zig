@@ -32,6 +32,12 @@ Until 1.0, minor versions may break the API; each entry says how.
   first wins "as `std.http` does"; std keeps the last of Content-Type,
   Location and Connection, so the docs say so now. Nothing reads
   differently.
+- `rsa`: one check holds a public key's and a private key's modulus and
+  exponent to the same rules, where two copies had drifted. A public
+  key (`PublicKey.fromSpki`) whose exponent runs past 32 bits is
+  `UnsupportedKey` now, as a private key's is, where it was
+  `InvalidPublicKey`; and a private key both too big and cut short is
+  `InvalidPrivateKey`, read whole before it is judged.
 
 ## 0.3.0 (2026-11-07)
 
