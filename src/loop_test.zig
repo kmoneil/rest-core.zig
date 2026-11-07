@@ -1232,6 +1232,51 @@ test "executeStream: a mid-body failure retries when the sink starts over, and n
     try testing.expectEqual(3, h.fake.stream_requests.items.len);
 }
 
+test "executeStream: restart is not asked when no retry follows" {
+    // Asking takes back what the sink holds. What arrived before a failure
+    // that is returned is the caller's, and a resume counts on having it.
+    const Sink = struct {
+        out: *std.Io.Writer,
+        asked: usize = 0,
+
+        fn restart(ptr: *anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.asked += 1;
+            self.out.end = 0;
+            return true;
+        }
+    };
+    const Never = struct {
+        fn retryable(_: anyerror, _: u16) bool {
+            return false;
+        }
+    };
+    const cut: Reply = .{ .respond = .{ .body = "0123456789", .cut_after = 4 } };
+    var h: H = undefined;
+    h.init(&.{ cut, cut });
+    defer h.deinit();
+    var out_buf: [64]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var sink: Sink = .{ .out = &out };
+    var call: StreamCall = .{
+        .method = .GET,
+        .path = "/v1/o",
+        .sink = .{ .writer = &out },
+        .restart = .{ .ptr = &sink, .restart = Sink.restart },
+        .retry = false,
+    };
+    try testing.expectError(error.ConnectionResetByPeer, h.engine().executeStream(&h.arena, call));
+    try testing.expectEqualStrings("0123", out.buffered());
+    // Nor when the failure is not one to retry.
+    out.end = 0;
+    call.retry = true;
+    call.retryable = Never.retryable;
+    try testing.expectError(error.ConnectionResetByPeer, h.engine().executeStream(&h.arena, call));
+    try testing.expectEqualStrings("0123", out.buffered());
+    try testing.expectEqual(0, sink.asked);
+    try testing.expectEqual(2, h.fake.stream_requests.items.len);
+}
+
 test "executeStream: a 401 is retried once with a fresh token, whatever the sink" {
     var h: H = undefined;
     h.init(&.{ unauthorized, ok });

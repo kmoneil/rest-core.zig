@@ -124,9 +124,10 @@ pub const StreamCall = struct {
     retry: bool = true,
     retryable: ?RetryableFn = null,
     /// A writer sink that can take the body again from its first byte:
-    /// after a transport failure mid-body the engine asks it to start over,
-    /// and when it has, retries as it would a buffered body. Null: such a
-    /// failure is returned.
+    /// after a transport failure mid-body, once the engine has decided to
+    /// retry it as it would a buffered body, it asks the sink to start over,
+    /// and retries when it has. A failure that is not retried leaves the
+    /// sink alone, holding what arrived. Null: such a failure is returned.
     restart: ?Restart = null,
     /// Filled with the response head as soon as it arrives, even when the
     /// body then fails; see `transport.StreamRequest.head_out`. With
@@ -316,6 +317,7 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 .window_ms = call.retry_window_ms,
                 .first_started = std.Io.Clock.awake.now(self.io),
                 .head_out = call.head_out,
+                .restart = call.restart,
             };
             attempts.clearOuts();
             const body = requestBody(call.body, streamed);
@@ -365,8 +367,8 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 error.ReadFailed, error.EndOfStream => |e| if (streamed) e else unreachable,
                 // A transport failure may have delivered part of the body to
                 // a writer sink already, which only a sink that can start
-                // over takes back.
-                else => |e| .{ .err = e, .last = call.sink == .writer and !restarted(call.restart) },
+                // over takes back, asked once a retry is decided.
+                else => |e| .{ .err = e, .sink_dirty = call.sink == .writer },
             };
         }
 
@@ -445,6 +447,8 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             error_body_out: ?*?[]const u8 = null,
             /// The call's `head_out`, cleared as `error_body_out` is.
             head_out: ?*?transport.StreamRequest.Head = null,
+            /// `StreamCall.restart`, asked only once a retry is decided.
+            restart: ?StreamCall.Restart = null,
             /// The attempt under way, from 1.
             number: u32 = 1,
             /// Whether the fresh-token retry after a 401 has been spent.
@@ -469,14 +473,15 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         };
 
         /// An attempt that failed: its error, its response's status (0 with
-        /// none), the delay the response asked for, and whether it must be
-        /// the last whatever the policy says.
+        /// none), the delay the response asked for, and whether part of its
+        /// body may be in the caller's sink.
         const Failed = struct {
             err: Error,
             http_status: u16 = 0,
             server_delay: ?u32 = null,
-            /// Part of a body went to a writer sink that cannot take it back.
-            last: bool = false,
+            /// Part of a body may have gone to a writer sink: another attempt
+            /// follows only if the sink starts over.
+            sink_dirty: bool = false,
         };
 
         /// What follows a failed attempt.
@@ -546,7 +551,7 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             // A cancel is the caller's, whatever `retryable` says of it. Its
             // request was spent when Canceled came back, so neither a retry's
             // sleep nor its send could be canceled again.
-            if (failed.last or failed.err == error.Canceled) return .stop;
+            if (failed.err == error.Canceled) return .stop;
             // A 401 usually means the token died between being fetched and
             // being used. The server refused the request before acting on
             // it, so trying again with a fresh token is safe even for a call
@@ -560,6 +565,9 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
             if (a.number >= a.max or !a.retryable(failed.err, failed.http_status)) return .stop;
             const delay_ms = self.waitMs(a, failed) orelse return .stop;
             if (self.pastWindow(a, delay_ms, failed.err)) return .stop;
+            // Last, since asking takes back what the sink holds: with no
+            // retry to follow, that part of the body is the caller's.
+            if (failed.sink_dirty and !restarted(a.restart)) return .stop;
             log.warn("{t} {s} failed with {t}; retrying in {d} ms (attempt {d} of {d})", .{
                 a.method, a.log_path, failed.err, delay_ms, a.number + 1, a.max,
             });
