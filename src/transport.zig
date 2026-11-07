@@ -413,6 +413,11 @@ pub const HttpTransport = struct {
         }) catch |err| return mapError(err, null);
         defer request.deinit();
         const connection = request.connection.?;
+        // A failure past this point leaves the rest of the response unread.
+        // Kept, the connection would have `request.deinit` drain it with
+        // std's chunked decoder (see `Dechunker`), unbounded: an arena that
+        // runs out on the headers or the gzip window must not reach that.
+        errdefer connection.closing = true;
 
         sendBody(&request, req.body) catch |err| {
             // A failed write leaves the connection in an unknown state.
@@ -1519,6 +1524,57 @@ test "HttpTransport reports a truncated chunked body as a dropped connection" {
     try testing.expectError(
         error.ConnectionResetByPeer,
         ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/a") }, arena.allocator()),
+    );
+}
+
+/// Sends a GET whose answer, `head` and then a chunk size near 2^64, is
+/// read through `arena`, which runs out after the head; then a GET that
+/// works. The connection must close: kept, std drains the body with its own
+/// chunked decoder (see `Dechunker`), which panics on that size in a safe
+/// build and reads any body to its end in every build. The server holds the
+/// connection open until the first call returns, so a drain waits out its
+/// pause even where nothing panics.
+fn expectOutOfMemoryAfterHeadCloses(comptime head: []const u8, arena: Allocator) !void {
+    const io = testing.io;
+    const reply = head ++ "ffffffffffffffff\r\n";
+    var open: std.atomic.Value(bool) = .init(false);
+    var server: ScriptedServer = try .start(io, &.{ reply, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" });
+    defer server.deinit(io);
+    server.pause = .{ .after = reply.len, .open = &open };
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    var buf: [128]u8 = undefined;
+    try testing.expectError(
+        error.OutOfMemory,
+        ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/a") }, arena),
+    );
+    open.store(true, .release);
+    var ok_arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer ok_arena.deinit();
+    const ok = try ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/b") }, ok_arena.allocator());
+    try testing.expectEqualStrings("{}", ok.body);
+    try serving.await(io);
+    try testing.expect(!server.pause_timed_out);
+    try testing.expectEqual(2, server.connections);
+}
+
+test "HttpTransport: an arena that fails on the headers closes the connection, never draining it" {
+    try expectOutOfMemoryAfterHeadCloses(
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        testing.failing_allocator,
+    );
+}
+
+test "HttpTransport: an arena that fails on the gzip window closes the connection, never draining it" {
+    // Room for the headers, not for the decoder's 64 KiB window.
+    var room: [4096]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&room);
+    try expectOutOfMemoryAfterHeadCloses(
+        "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n",
+        fixed.allocator(),
     );
 }
 

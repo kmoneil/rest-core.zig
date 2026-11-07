@@ -2,6 +2,16 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
+## Unreleased
+
+- Fixed: when the caller's arena ran out after a response's head (copying
+  its headers, or the 64 KiB window a gzip or deflate body needs),
+  `HttpTransport` kept the connection, and releasing the request had
+  std drain the rest of the body with its own chunked decoder: with no
+  bound, and on a chunk size near 2^64 a panic in a safe build and
+  undefined in ReleaseFast. The connection is closed now, as on every
+  other failure after the head (security catalog RESP-02).
+
 ## 0.2.1 (2026-11-06)
 
 - Fixed: `loop.pathOnOrigin` compared bytes, so a URL with its scheme's
