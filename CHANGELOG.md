@@ -42,6 +42,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   made `publicKey().writeSpki` panic in a safe build and spin for ever in
   ReleaseFast. Such a key is `error.UnsupportedKey` now (security catalog
   RSA-04).
+- Fixed: three stack buffers that held an RSA secret were never wiped: a
+  refused key's `d` (`parsePem` copied it, then failed on the primes),
+  the columns of (p - 1)(q - 1) before their carries, and the signing
+  blind. Each is zeroed when its function returns. `parsePem` returns
+  its key by value, and in ReleaseFast a copy is left in the stack it
+  used, which nothing here can reach; its doc and security catalog
+  SECRET-04 now say so.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
