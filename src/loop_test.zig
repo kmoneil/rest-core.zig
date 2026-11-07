@@ -446,6 +446,44 @@ test "retry: memory running out on a refused body ends the call, whatever retrya
     try testing.expectEqual(0, h.clock.sleep_count);
 }
 
+/// One call with everything the loop allocates for switched on (a retry,
+/// wipe, the outs and a credential's headers) through `gpa`.
+fn callUnder(gpa: Allocator, streamed: bool) !void {
+    var h: H = undefined;
+    h.init(&.{ unavailable, ok });
+    defer h.deinit();
+    h.token.credential_headers = &.{.{ .name = "x-goog-user-project", .value = "p" }};
+    var e = h.engine();
+    e.gpa = gpa;
+    var response: std.heap.ArenaAllocator = .init(gpa);
+    defer response.deinit();
+    var head: ?transport.StreamRequest.Head = null;
+    var body: ?[]const u8 = null;
+    if (streamed) {
+        _ = try e.executeStream(&response, .{ .method = .GET, .path = "/v1/things", .wipe = true, .head_out = &head, .error_body_out = &body });
+    } else {
+        _ = try e.execute(&response, .{ .method = .GET, .path = "/v1/things", .wipe = true, .head_out = &head, .error_body_out = &body });
+    }
+}
+
+test "execute and executeStream: memory running out anywhere is OutOfMemory, and leaks nothing" {
+    try std.testing.checkAllAllocationFailures(testing.allocator, callUnder, .{false});
+    try std.testing.checkAllAllocationFailures(testing.allocator, callUnder, .{true});
+}
+
+test "retry: a cancel during the wait before a retry is returned, and Diagnostics says so" {
+    var h: H = undefined;
+    h.init(&.{ unavailable, ok });
+    defer h.deinit();
+    h.clock.cancel_sleep = true;
+    try testing.expectError(error.Canceled, h.get());
+    try testing.expectEqual(1, h.fake.requests.items.len);
+    // What the call returned, not the 503 before it: a cancellation has no
+    // status, as Diagnostics' doc says.
+    try testing.expectEqual(0, h.diag.http_status);
+    try testing.expectEqualStrings("Canceled", h.diag.message());
+}
+
 test "retry: a canceled attempt is returned, whatever retryable says" {
     // A cancel is the caller's, not the network's. Its request was spent
     // when Canceled came back, so a retry's sleep and send could not be
@@ -1053,7 +1091,7 @@ fn retryPolicyProperty(_: void, input: []const u8) !void {
     var delays: [8]?u32 = @splat(null);
     var texts: [8][4]u8 = undefined;
     var headers: [8][1]transport.Header = undefined;
-    for (&script, 0..) |*reply, i| reply.* = switch (g.intRange(u8, 0, 4)) {
+    for (&script, 0..) |*reply, i| reply.* = switch (g.intRange(u8, 0, 5)) {
         0 => ok,
         1 => unavailable,
         2 => .{ .respond = .{ .status = 404, .body = "{}" } },
@@ -1063,6 +1101,7 @@ fn retryPolicyProperty(_: void, input: []const u8) !void {
             headers[i] = .{.{ .name = "Retry-After", .value = std.fmt.bufPrint(&texts[i], "{d}", .{seconds}) catch unreachable }};
             break :r .{ .respond = .{ .status = g.pick(u16, &.{ 429, 503 }), .headers = &headers[i], .body = "{}" } };
         },
+        4 => unauthorized,
         else => .{ .fail = error.ConnectionResetByPeer },
     };
 
@@ -1074,21 +1113,32 @@ fn retryPolicyProperty(_: void, input: []const u8) !void {
     const outcome = e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things" });
 
     const requests = h.fake.requests.items.len;
-    try testing.expect(requests >= 1 and requests <= policy.max_attempts);
-    // One wait between attempts, none before the first or after the last.
-    try testing.expectEqual(requests - 1, h.clock.sleep_count);
-    for (0..h.clock.sleep_count) |i| {
-        const slept: u32 = @intCast(h.clock.sleepMs(i));
-        if (delays[i]) |d| {
+    // The first 401 buys one more attempt, at once, with a fresh token.
+    var reauthenticated = false;
+    // One wait between attempts, none before the first or after the last,
+    // and none before the fresh-token retry.
+    var sleep: usize = 0;
+    for (0..requests - 1) |j| {
+        if (!reauthenticated and isUnauthorized(script[j])) {
+            reauthenticated = true;
+            continue;
+        }
+        const slept: u32 = @intCast(h.clock.sleepMs(sleep));
+        sleep += 1;
+        if (delays[j]) |d| {
             // Never shorter than the server asked, and only ever within
             // the cap, since a longer delay is never waited.
             try testing.expect(slept >= d);
             try testing.expect(d <= policy.max_backoff_ms);
-            try testing.expect(slept <= @max(policy.backoffCapMs(@intCast(i + 1)), d));
+            try testing.expect(slept <= @max(policy.backoffCapMs(@intCast(j + 1)), d));
         } else {
-            try testing.expect(slept <= policy.backoffCapMs(@intCast(i + 1)));
+            try testing.expect(slept <= policy.backoffCapMs(@intCast(j + 1)));
         }
     }
+    try testing.expectEqual(sleep, h.clock.sleep_count);
+    try testing.expect(h.token.invalidations <= 1);
+    const most = policy.max_attempts + @intFromBool(reauthenticated);
+    try testing.expect(requests >= 1 and requests <= most);
     // A run stops at the first reply that is not retryable, or that asks
     // for longer than the cap, and a success is always the last thing that
     // happened.
@@ -1098,9 +1148,16 @@ fn retryPolicyProperty(_: void, input: []const u8) !void {
         try testing.expectEqual(200, script[last].respond.status);
     } else |err| {
         const too_long = if (delays[last]) |d| d > policy.max_backoff_ms else false;
-        if (requests < policy.max_attempts) try testing.expect(!GoogleShaped.retryable(err, 0) or too_long);
+        if (requests < most) try testing.expect(!GoogleShaped.retryable(err, 0) or too_long);
         try testing.expectEqual(delays[last], h.diag.retry_after_ms);
     }
+}
+
+fn isUnauthorized(reply: Reply) bool {
+    return switch (reply) {
+        .respond => |canned| canned.status == 401,
+        .fail => false,
+    };
 }
 
 test "fuzz retry: attempts and waits follow the policy for any sequence of failures" {

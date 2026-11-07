@@ -569,7 +569,12 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 .now => a.reset(response),
                 .after_ms => |ms| {
                     a.reset(response);
-                    try self.io.sleep(.fromMilliseconds(ms), .awake);
+                    self.io.sleep(.fromMilliseconds(ms), .awake) catch |err| {
+                        // The call ends with the cancel, not the failure
+                        // before it, and Diagnostics says what it returned.
+                        if (self.diagnostics) |d| d.print("{t}", .{err});
+                        return err;
+                    };
                 },
             }
         }

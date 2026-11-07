@@ -63,6 +63,10 @@ Until 1.0, minor versions may break the API; each entry says how.
   the years 1 to 9999 with an assert alone, so a caller's far-future
   sentinel overflowed the fixed buffer into `unreachable` in ReleaseFast.
   An instant past either end is written as that end now.
+- Fixed: a call canceled during the wait before a retry left
+  `Diagnostics` describing the failure before it (an HTTP 503, say),
+  though the call returned `error.Canceled` and `Diagnostics` says a
+  cancellation has no status. It says Canceled now.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
