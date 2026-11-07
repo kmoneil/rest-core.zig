@@ -38,6 +38,10 @@ Until 1.0, minor versions may break the API; each entry says how.
   `UnsupportedKey` now, as a private key's is, where it was
   `InvalidPublicKey`; and a private key both too big and cut short is
   `InvalidPrivateKey`, read whole before it is judged.
+- Fixed: `testing.FaultTransport` recorded an exchange before marking its
+  fault fired, so a record that ran out of memory left `fired` false and
+  the `after_fault` hook unrun, though the fault took effect. It fires
+  first now.
 
 ## 0.3.0 (2026-11-07)
 
