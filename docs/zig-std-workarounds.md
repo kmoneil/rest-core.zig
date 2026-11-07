@@ -11,7 +11,9 @@ last group was found while porting it. Each was checked against Zig
 ## From gcp.zig
 
 - A chunk size near 2^64 overflows `std.http`'s chunked decoder (a panic
-  in a safe build), so the transport decodes chunked bodies itself.
+  in a safe build), so the transport decodes chunked bodies itself. It
+  also closes a connection it gives up on after the head, since
+  releasing the request would drain the rest with std's decoder.
 - A body that ends before its `Content-Length` is reported as complete;
   the transport checks, and reports a dropped connection.
 - The gzip decoder stops before the last chunk, which kept connections
