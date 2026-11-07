@@ -266,9 +266,11 @@ pub const Transport = struct {
     }
 
     /// Sends a streaming request. Calling this through a transport whose
-    /// vtable has no `sendStream` is a programmer bug.
+    /// vtable has no `sendStream` (a fake that only ever sees `send`) is a
+    /// programmer bug, and panics in every build mode.
     pub fn sendStream(self: Transport, req: StreamRequest, arena: Allocator) StreamError!StreamResponse {
-        return self.vtable.sendStream.?(self.ptr, req, arena);
+        const stream = self.vtable.sendStream orelse @panic("this Transport cannot stream: its vtable has no sendStream");
+        return stream(self.ptr, req, arena);
     }
 };
 

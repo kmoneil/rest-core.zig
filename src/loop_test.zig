@@ -1232,6 +1232,52 @@ test "executeStream: a mid-body failure retries when the sink starts over, and n
     try testing.expectEqual(3, h.fake.stream_requests.items.len);
 }
 
+test "executeStream: a transport's own ReadFailed or EndOfStream is a dropped connection" {
+    // StreamError allows both on any request, and a transport built on
+    // std.Io.Reader passes a server's short body up as EndOfStream. With no
+    // body of the caller's to read, they are the transport's: the dropped
+    // connection HttpTransport names a short body, retried as one.
+    const Short = struct {
+        fail: transport.StreamError,
+        fails_left: usize = 1,
+        calls: usize = 0,
+
+        fn seam(s: *@This()) transport.Transport {
+            return .{ .ptr = s, .vtable = &.{ .send = send, .sendStream = sendStream } };
+        }
+
+        fn send(_: *anyopaque, _: transport.Request, _: Allocator) transport.Error!transport.Response {
+            return error.NetworkFailure;
+        }
+
+        fn sendStream(ptr: *anyopaque, _: transport.StreamRequest, _: Allocator) transport.StreamError!transport.StreamResponse {
+            const s: *@This() = @ptrCast(@alignCast(ptr));
+            s.calls += 1;
+            if (s.fails_left == 0) return .{ .status = 200, .body = "{}" };
+            s.fails_left -= 1;
+            return s.fail;
+        }
+    };
+    var h: H = undefined;
+    h.init(&.{});
+    defer h.deinit();
+    var e = h.engine();
+
+    var short: Short = .{ .fail = error.EndOfStream };
+    e.transport = short.seam();
+    const res = try e.executeStream(&h.arena, .{ .method = .GET, .path = "/v1/o" });
+    try testing.expectEqualStrings("{}", res.body);
+    try testing.expectEqual(2, short.calls);
+
+    // To a writer sink with no way to start over, it is returned.
+    var out_buf: [8]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    short = .{ .fail = error.ReadFailed };
+    e.transport = short.seam();
+    try testing.expectError(error.ConnectionResetByPeer, e.executeStream(&h.arena, .{ .method = .GET, .path = "/v1/o", .sink = .{ .writer = &out } }));
+    try testing.expectEqual(1, short.calls);
+}
+
 test "executeStream: restart is not asked when no retry follows" {
     // Asking takes back what the sink holds. What arrived before a failure
     // that is returned is the caller's, and a resume counts on having it.
