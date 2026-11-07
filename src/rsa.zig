@@ -63,8 +63,8 @@ pub const VerifyError = error{
 pub const PublicKeyError = error{
     /// Not a SubjectPublicKeyInfo, or one whose contents do not decode.
     InvalidPublicKey,
-    /// A well-formed key this code cannot use: not RSA, or outside the
-    /// supported modulus sizes.
+    /// A well-formed key this code cannot use: not RSA, outside the
+    /// supported modulus sizes, or with a public exponent over 32 bits.
     UnsupportedKey,
 };
 
@@ -238,12 +238,10 @@ pub const PublicKey = struct {
         const e_int = readElement(seq.body, &r) orelse return error.InvalidPublicKey;
         const n_bytes = magnitude(n_int) orelse return error.InvalidPublicKey;
         const e_bytes = magnitude(e_int) orelse return error.InvalidPublicKey;
-        if (n_bytes.len > max_modulus_bytes) return error.UnsupportedKey;
-        const n = Modulus.fromBytes(n_bytes, .big) catch return error.InvalidPublicKey;
-        if (n.bits() < min_modulus_bits) return error.UnsupportedKey;
-        if (e_bytes.len == 0 or e_bytes.len > 4) return error.InvalidPublicKey;
-        const e = Fe.fromBytes(n, e_bytes, .big) catch return error.InvalidPublicKey;
-        if (!e.isOdd()) return error.InvalidPublicKey;
+        const n, const e = checkPublic(n_bytes, e_bytes) catch |err| return switch (err) {
+            error.Invalid => error.InvalidPublicKey,
+            error.Unsupported => error.UnsupportedKey,
+        };
         return .{ .n = n, .e = e, .len = (n.bits() + 7) / 8 };
     }
 
@@ -516,52 +514,31 @@ fn parseDer(bytes: []const u8, key: *PrivateKey) ParseError!void {
     return parsePkcs1(inner.body, key);
 }
 
-/// RFC 8017 A.1.2: SEQUENCE { version, n, e, d, p, q, dP, dQ, qInv }. Only
-/// n, e and d are used; signing with d alone is simpler than CRT and fast
-/// enough for a token an hour.
+/// RFC 8017 A.1.2: SEQUENCE { version, n, e, d, p, q, dP, dQ, qInv }, into
+/// `key`. n, e and d sign, without CRT, which is simpler and fast enough
+/// for a token an hour; p and q give the totient signing blinds its
+/// exponent with (see `privateOp`).
 fn parsePkcs1(bytes: []const u8, key: *PrivateKey) ParseError!void {
     var pos: usize = 0;
     const seq = readElement(bytes, &pos) orelse return error.InvalidPrivateKey;
     if (seq.tag != 0x30) return error.InvalidPrivateKey;
-    var p: usize = 0;
-    const version = readElement(seq.body, &p) orelse return error.InvalidPrivateKey;
+    var at: usize = 0;
+    const version = readElement(seq.body, &at) orelse return error.InvalidPrivateKey;
     if (version.tag != 0x02) return error.InvalidPrivateKey;
     // Version 1 is a multi-prime key, which has a different tail.
     if (!std.mem.eql(u8, version.body, &.{0})) return error.UnsupportedKey;
-    const n_int = readElement(seq.body, &p) orelse return error.InvalidPrivateKey;
-    const e_int = readElement(seq.body, &p) orelse return error.InvalidPrivateKey;
-    const d_int = readElement(seq.body, &p) orelse return error.InvalidPrivateKey;
-    const n_bytes = magnitude(n_int) orelse return error.InvalidPrivateKey;
-    const e_bytes = magnitude(e_int) orelse return error.InvalidPrivateKey;
-    const d_bytes = magnitude(d_int) orelse return error.InvalidPrivateKey;
-
-    const n, const e = try privatePublic(n_bytes, e_bytes);
+    // n, e, d, p and q; dP, dQ and qInv are not used.
+    var ints: [5][]const u8 = undefined;
+    for (&ints) |*int| {
+        const element = readElement(seq.body, &at) orelse return error.InvalidPrivateKey;
+        int.* = magnitude(element) orelse return error.InvalidPrivateKey;
+    }
+    const n_bytes, const e_bytes, const d_bytes, const p_bytes, const q_bytes = ints;
+    const n, const e = checkPublic(n_bytes, e_bytes) catch |err| return switch (err) {
+        error.Invalid => error.InvalidPrivateKey,
+        error.Unsupported => error.UnsupportedKey,
+    };
     if (d_bytes.len == 0 or d_bytes.len > max_modulus_bytes) return error.InvalidPrivateKey;
-    return keyOf(n, e, d_bytes, n_bytes, seq.body, &p, key);
-}
-
-/// A private key's modulus and public exponent, held to what this code
-/// signs with: a supported modulus size, and an odd exponent of at most
-/// 32 bits, as `PublicKey.fromSpki` reads one (`writeSpki` sizes its
-/// output for that).
-fn privatePublic(n_bytes: []const u8, e_bytes: []const u8) ParseError!struct { Modulus, Fe } {
-    if (n_bytes.len > max_modulus_bytes) return error.UnsupportedKey;
-    const n = Modulus.fromBytes(n_bytes, .big) catch return error.InvalidPrivateKey;
-    if (n.bits() < min_modulus_bits) return error.UnsupportedKey;
-    if (e_bytes.len > 4) return error.UnsupportedKey;
-    const e = Fe.fromBytes(n, e_bytes, .big) catch return error.InvalidPrivateKey;
-    if (!e.isOdd()) return error.InvalidPrivateKey;
-    return .{ n, e };
-}
-
-/// The key from its parts, into `key`, and the two primes that follow `d`
-/// in `body` at `pos`, which give the totient signing blinds its exponent
-/// with.
-fn keyOf(n: Modulus, e: Fe, d_bytes: []const u8, n_bytes: []const u8, body: []const u8, pos: *usize, key: *PrivateKey) ParseError!void {
-    const p_int = readElement(body, pos) orelse return error.InvalidPrivateKey;
-    const q_int = readElement(body, pos) orelse return error.InvalidPrivateKey;
-    const p_bytes = magnitude(p_int) orelse return error.InvalidPrivateKey;
-    const q_bytes = magnitude(q_int) orelse return error.InvalidPrivateKey;
     // The secret parts go straight into the caller's key, never into a
     // local that is copied out.
     key.* = .{
@@ -577,6 +554,21 @@ fn keyOf(n: Modulus, e: Fe, d_bytes: []const u8, n_bytes: []const u8, body: []co
     // A key refused here leaves no `d` behind.
     errdefer key.wipe();
     key.phi_len = (try totient(n_bytes, p_bytes, q_bytes, &key.phi)).len;
+}
+
+/// A key's modulus and public exponent from their DER magnitudes, held to
+/// what this code signs and verifies with: a supported modulus size, and
+/// an odd exponent of at most 32 bits, which `writeSpki` sizes its output
+/// for. One check for a public key and a private one, so the two cannot
+/// drift; each names its own errors.
+fn checkPublic(n_bytes: []const u8, e_bytes: []const u8) error{ Invalid, Unsupported }!struct { Modulus, Fe } {
+    if (n_bytes.len > max_modulus_bytes) return error.Unsupported;
+    const n = Modulus.fromBytes(n_bytes, .big) catch return error.Invalid;
+    if (n.bits() < min_modulus_bits) return error.Unsupported;
+    if (e_bytes.len > 4) return error.Unsupported;
+    const e = Fe.fromBytes(n, e_bytes, .big) catch return error.Invalid;
+    if (!e.isOdd()) return error.Invalid;
+    return .{ n, e };
 }
 
 /// The longest blinded exponent: `d + k * phi` for a 64-bit `k`.
@@ -1032,6 +1024,44 @@ test "rsa: a key too big to hold is UnsupportedKey, not InvalidPrivateKey" {
     var pem: [8192]u8 = undefined;
     const text = try std.fmt.bufPrint(&pem, "-----BEGIN PRIVATE KEY-----\n{s}\n-----END PRIVATE KEY-----\n", .{encoded});
     try testing.expectError(error.UnsupportedKey, parsePem(text));
+}
+
+test "rsa: a public key whose exponent is over 32 bits is UnsupportedKey, as a private key's is" {
+    // One check reads both kinds of key now; the public reader called this
+    // InvalidPublicKey, the private one UnsupportedKey.
+    var key = try parsePem(test_key_2048);
+    defer key.deinit();
+    var spki_buf: [max_spki_len]u8 = undefined;
+    const spki = key.publicKey().writeSpki(&spki_buf);
+    // SEQUENCE { AlgorithmIdentifier, BIT STRING { 0, SEQUENCE { n, e } } }
+    var pos: usize = 0;
+    const outer = readElement(spki, &pos).?;
+    var at: usize = 0;
+    const algorithm = readElement(outer.body, &at).?;
+    const bits = readElement(outer.body, &at).?;
+    var in: usize = 0;
+    const seq = readElement(bits.body[1..], &in).?;
+    var int_at: usize = 0;
+    const n = magnitude(readElement(seq.body, &int_at).?).?;
+    // The same n, with an odd e of 5 bytes, written back as an SPKI.
+    var inner_buf: [max_spki_len]u8 = undefined;
+    var inner: std.Io.Writer = .fixed(&inner_buf);
+    try writeIntegers(&inner, &.{ n, &.{ 0x01, 0x00, 0x00, 0x00, 0x01 } });
+    var body_buf: [max_spki_len + 16]u8 = undefined;
+    var body: std.Io.Writer = .fixed(&body_buf);
+    try body.writeByte(0x30);
+    try writeLength(&body, algorithm.body.len);
+    try body.writeAll(algorithm.body);
+    try body.writeByte(0x03);
+    try writeLength(&body, inner.buffered().len + 1);
+    try body.writeByte(0x00);
+    try body.writeAll(inner.buffered());
+    var der_buf: [max_spki_len + 32]u8 = undefined;
+    var der: std.Io.Writer = .fixed(&der_buf);
+    try der.writeByte(0x30);
+    try writeLength(&der, body.buffered().len);
+    try der.writeAll(body.buffered());
+    try testing.expectError(error.UnsupportedKey, PublicKey.fromSpki(der.buffered()));
 }
 
 test "rsa: a private key whose public exponent is over 32 bits is UnsupportedKey" {
