@@ -81,6 +81,11 @@ pub const Call = struct {
     /// and the bearer token, is wiped when the call returns, and a failed
     /// attempt's response memory is freed at once rather than kept for the
     /// next attempt, so an arena over a `WipingAllocator` wipes it then.
+    /// `HttpTransport` zeroes the `Bearer` header it writes into the
+    /// response arena once the request is sent, wipe or not. Out of reach:
+    /// std's HTTP client keeps the request head, the header in it, in its
+    /// pooled connection's write buffer for the connection's life, and
+    /// frees it without wiping.
     wipe: bool = false,
     /// When the call fails with a response, pointed at that response's
     /// body, which stays in `response` until the caller resets it, for a

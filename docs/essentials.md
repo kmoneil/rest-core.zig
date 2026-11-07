@@ -79,7 +79,9 @@ its content type, headers), `executeStream` with a `StreamCall`, or
 A call that must not be repeated once it may have reached the server, as a
 create, passes `retryable = loop.unsentOnly`. `retry_window_ms` bounds how
 late a retry may begin; `wipe` wipes the call's memory, the token included,
-when it returns; `error_body_out` keeps a refused body for a caller that
+when it returns (std's HTTP client keeps its own copy of the request head,
+the token in it, in its pooled connection's buffer, out of the loop's
+reach); `error_body_out` keeps a refused body for a caller that
 reads more of it than `Diagnostics` does; `head_out` hands out each
 attempt's status and headers, a success's too, as a long-running write's
 202 and the `Location` or `Azure-AsyncOperation` it names (null when the

@@ -396,10 +396,15 @@ pub const HttpTransport = struct {
         arena: Allocator,
     ) StreamError!StreamResponse {
         try checkRequestHeaders(req);
-        const authorization: ?[]const u8 = if (req.bearer) |token|
+        const authorization: ?[]u8 = if (req.bearer) |token|
             try arena.print("Bearer {s}", .{token})
         else
             null;
+        // The header is in the caller's arena, which may outlive the call by
+        // far (the loop hands its response arena here): gone once the head
+        // is written, which it is by the time this returns. std's copy in
+        // the connection's write buffer is out of reach.
+        defer if (authorization) |v| std.crypto.secureZero(u8, v);
         var request = self.client.request(httpMethod(req.method), uri, .{
             .connection = try self.preconnect(uri, protocol),
             .redirect_behavior = .unhandled,
