@@ -195,6 +195,32 @@ test "security: CWE-400 std's Group.async drops a cancel when it runs a task inl
     }
 }
 
+test "security: CWE-400 with async capacity to spare, a cancel in a group of tasks is kept" {
+    // What CONN-08's advice rests on: the same two tasks, as std's connect
+    // starts one per address, given room to run as tasks rather than
+    // inline, are canceled at once. So an Io whose async_limit leaves that
+    // room keeps a connect within its time limit.
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{ .async_limit = .limited(4) });
+    defer threaded.deinit();
+    const io = threaded.io();
+    const Job = struct {
+        fn sleepFor(job_io: std.Io, ms: i64) std.Io.Cancelable!void {
+            try job_io.sleep(.fromMilliseconds(ms), .awake);
+        }
+        fn run(job_io: std.Io) std.Io.Cancelable!void {
+            var group: std.Io.Group = .init;
+            group.async(job_io, sleepFor, .{ job_io, 2_000 });
+            group.async(job_io, sleepFor, .{ job_io, 2_000 });
+            try group.await(job_io);
+        }
+    };
+    const started = std.Io.Clock.awake.now(io);
+    var job = try io.concurrent(Job.run, .{io});
+    try io.sleep(.fromMilliseconds(50), .awake);
+    try testing.expectError(error.Canceled, job.cancel(io));
+    try testing.expect(started.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() < 1_000);
+}
+
 test "security: CWE-200 a redirect is never followed, so the token stays with its host" {
     const io = testing.io;
     var elsewhere: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"});

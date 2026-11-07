@@ -9,6 +9,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   way, and wipes it on any error. `parsePem`, which returns the key by
   value, can leave a copy in the stack it used (seen in ReleaseFast);
   it stays, and its doc points here (security catalog SECRET-04).
+- docs/essentials.md: a stalled connect can outlive a request's time
+  limit while the `Io`'s `async_limit` is spent (std's ziglang/zig#37192),
+  and `std.Io.Threaded`'s default is the CPU count less one, none on a
+  one-CPU machine; set `async_limit` when making the `Io` (security
+  catalog CONN-08, now with a test that a cancel holds given room).
 
 ## 0.3.0 (2026-11-07)
 
