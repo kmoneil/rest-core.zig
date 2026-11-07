@@ -28,12 +28,15 @@ test "security: a fault while signing never hands out the signature it made" {
     // arithmetic would leave it: the signature it makes would let anyone
     // factor the modulus from it, so it must never leave.
     key.d[key.d_len - 1] ^= 0x01;
-    var out: [rsa.max_modulus_bytes]u8 = undefined;
+    // Not the error alone: what the caller's buffer holds after it.
+    var out: [rsa.max_modulus_bytes]u8 = @splat(0);
     try testing.expectError(error.SignatureFailed, key.sign(testing.io, rsa.test_message, &out));
+    try testing.expect(std.mem.allEqual(u8, &out, 0));
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(rsa.test_message, &digest, .{});
     const salt: [32]u8 = @splat(7);
     try testing.expectError(error.SignatureFailed, key.signPss(testing.io, .sha256, &digest, &salt, &out));
+    try testing.expect(std.mem.allEqual(u8, &out, 0));
 }
 
 test "security: CWE-226 a private key's secrets are zeroed when it is done with" {

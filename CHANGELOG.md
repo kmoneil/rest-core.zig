@@ -49,6 +49,10 @@ Until 1.0, minor versions may break the API; each entry says how.
   its key by value, and in ReleaseFast a copy is left in the stack it
   used, which nothing here can reach; its doc and security catalog
   SECRET-04 now say so.
+- Fixed: an RSA signature that failed its own check (`SignatureFailed`,
+  as a fault in the key or the arithmetic makes) was already written into
+  the caller's `out`: the faulty signature a fault attack wants. It is
+  written only once it verifies (security catalog RSA-02).
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
