@@ -6,6 +6,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const flate = std.compress.flate;
+const Crc32 = @import("Crc32.zig");
 const Allocator = std.mem.Allocator;
 const http = std.http;
 
@@ -882,7 +883,7 @@ fn finishFraming(source: BodySource, content_length: ?u64) Error!void {
 /// about 1.7 ms, more than the decode (`zig build bench`).
 const TrailerCheck = struct {
     container: flate.Container,
-    crc: std.hash.Crc32 = .init(),
+    crc: Crc32 = .init(),
     adler: std.hash.Adler32 = .{},
     count: u64 = 0,
 
