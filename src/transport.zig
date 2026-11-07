@@ -3159,3 +3159,155 @@ test "HttpTransport: a cancel while a bad gzip body's framing drains is Canceled
 test "HttpTransport: a cancel while a bad gzip body's framing drains is Canceled, to a writer" {
     try expectCanceledInBodyDrain(.writer);
 }
+
+/// A gzip body in two chunks, decoding to `zipped_json`.
+const zipped_head = "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n";
+const zipped_chunks = "14\x0d\x0a\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff\xabV*\xc9/\xc8L.V\xb2\x0d\x0a2c\x0d\x0a\x8a\xaeV\xcaK\xccMU\xb2R*(\xca\xcfJM.)\xd6/\xd0\x87H\xeaWe\x16\x14\xa4\xa6(\xd5\xc6\xd6\x02\x00\x80\xdd\xe810\x00\x00\x00\x0d\x0a0\x0d\x0a\x0d\x0a";
+const zipped_json = "{\"topics\":[{\"name\":\"projects/p/topics/zipped\"}]}";
+
+/// Sends an untimed GET whose answer the server stops after `cut` bytes,
+/// holding the connection open, and cancels the call while it waits for
+/// the rest: it must come back Canceled, which is never retried.
+fn expectCanceledMidBody(reply: []const u8, cut: usize, sink: enum { buffer, writer }) !void {
+    const io = testing.io;
+    var open: std.atomic.Value(bool) = .init(false);
+    var server: ScriptedServer = try .start(io, &.{reply});
+    defer server.deinit(io);
+    server.pause = .{ .after = cut, .open = &open };
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var out_buf: [256]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    var buf: [128]u8 = undefined;
+    const req: StreamRequest = .{
+        .method = .GET,
+        .url = server.url(&buf, "/v1/o?alt=media"),
+        .accept_encoding = .compressed,
+        .sink = switch (sink) {
+            .buffer => .buffer,
+            .writer => .{ .writer = &out },
+        },
+    };
+    const Call = struct {
+        fn run(t: Transport, r: StreamRequest, a: Allocator) StreamError!StreamResponse {
+            return t.sendStream(r, a);
+        }
+    };
+    var pending = try io.concurrent(Call.run, .{ ht.transport(), req, arena.allocator() });
+    try io.sleep(.fromMilliseconds(300), .awake);
+    const result = pending.cancel(io);
+    open.store(true, .release);
+    try testing.expectError(error.Canceled, result);
+}
+
+test "HttpTransport: a cancel mid-body is Canceled, plain or gzip, buffered or to a writer" {
+    const plain = "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n0123456789";
+    const zipped = zipped_head ++ zipped_chunks;
+    // After the first chunk of each: the head and some body are in.
+    const plain_cut = plain.len - 6;
+    const zipped_cut = zipped_head.len + 4 + 0x14 + 2;
+    inline for (.{ .buffer, .writer }) |sink| {
+        try expectCanceledMidBody(plain, plain_cut, sink);
+        try expectCanceledMidBody(zipped, zipped_cut, sink);
+    }
+}
+
+test "HttpTransport: a timed request whose task is canceled is Canceled, not TimedOut" {
+    const io = testing.io;
+    var server: ScriptedServer = try .start(io, &.{});
+    defer server.deinit(io);
+    server.hang = true;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    const Call = struct {
+        fn run(t: Transport, u: []const u8, a: Allocator) Error!Response {
+            return t.send(.{ .method = .GET, .url = u, .timeout_ms = 10_000 }, a);
+        }
+    };
+    var pending = try io.concurrent(Call.run, .{ ht.transport(), server.url(&buf, "/v1/slow"), arena.allocator() });
+    try io.sleep(.fromMilliseconds(100), .awake);
+    try testing.expectError(error.Canceled, pending.cancel(io));
+}
+
+test "HttpTransport: memory running out anywhere in a response is OutOfMemory, and the next request works" {
+    const io = testing.io;
+    var fail_index: usize = 0;
+    while (true) : (fail_index += 1) {
+        try testing.expect(fail_index < 64);
+        var server: ScriptedServer = try .start(io, &.{ zipped_head ++ zipped_chunks, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}" });
+        defer server.deinit(io);
+        var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+        defer _ = serving.cancel(io) catch {};
+        var ht: HttpTransport = .init(testing.allocator, io, "t");
+        defer ht.deinit();
+        var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+        defer arena.deinit();
+        var failing: std.testing.FailingAllocator = .init(arena.allocator(), .{ .fail_index = fail_index });
+        var buf: [128]u8 = undefined;
+        const first = ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/a") }, failing.allocator());
+        if (!failing.has_induced_failure) {
+            try testing.expectEqualStrings(zipped_json, (try first).body);
+            break;
+        }
+        try testing.expectError(error.OutOfMemory, first);
+        const next = try ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/b"), .timeout_ms = 10_000 }, arena.allocator());
+        try testing.expectEqualStrings("{}", next.body);
+    }
+    // At least the headers, the gzip window and the body were tried.
+    try testing.expect(fail_index >= 3);
+}
+
+test "HttpTransport: an Io with room for one task is ConcurrencyUnavailable, and nothing is sent" {
+    // The request's task may start where the timer's cannot: it must not
+    // go out then, untimed or canceled on the way.
+    const io = testing.io;
+    var server: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"});
+    defer server.deinit(io);
+    server.hang = true;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var threaded: std.Io.Threaded = .init(testing.allocator, .{ .concurrent_limit = .limited(1) });
+    defer threaded.deinit();
+    var ht: HttpTransport = .init(testing.allocator, threaded.io(), "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    try testing.expectError(error.ConcurrencyUnavailable, ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/v1/slow"), .timeout_ms = 150 }, arena.allocator()));
+    try io.sleep(.fromMilliseconds(200), .awake);
+    try testing.expectEqual(0, server.seen_count);
+    try testing.expectEqual(0, server.connections);
+}
+
+test "HttpTransport: a body reader that fails is ReadFailed, and the next request works" {
+    const io = testing.io;
+    var server: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"});
+    defer server.deinit(io);
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    var reader: std.Io.Reader = .failing;
+    try testing.expectError(error.ReadFailed, ht.transport().sendStream(.{
+        .method = .PUT,
+        .url = server.url(&buf, "/v1/upload"),
+        .body = .{ .stream = .{ .reader = &reader, .len = 10 } },
+    }, arena.allocator()));
+    const next = try ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/v1/a"), .timeout_ms = 10_000 }, arena.allocator());
+    try testing.expectEqualStrings("{}", next.body);
+    try serving.await(io);
+    // The failed upload never reached the server as a request.
+    try testing.expectEqual(1, server.seen_count);
+}
