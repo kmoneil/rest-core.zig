@@ -436,29 +436,22 @@ pub const HttpTransport = struct {
         }) catch |err| return mapError(err, null);
         defer request.deinit();
         const connection = request.connection.?;
-        // A failure past this point leaves the rest of the response unread.
-        // Kept, the connection would have `request.deinit` drain it with
-        // std's chunked decoder (see `Dechunker`), unbounded: an arena that
-        // runs out on the headers or the gzip window must not reach that.
+        // Any failure from here on closes the connection, the one place it
+        // is done: a write that failed leaves it in an unknown state, and a
+        // refused head, a body refused or cut short, or an arena that ran
+        // out leaves the rest of the response unread. Kept, std would reuse
+        // it, or have `request.deinit` drain it with std's chunked decoder
+        // (see `Dechunker`), unbounded.
         errdefer connection.closing = true;
 
-        sendBody(&request, req.body) catch |err| {
-            // A failed write leaves the connection in an unknown state.
-            connection.closing = true;
-            return switch (err) {
-                // The caller's reader failed, or ended before the declared
-                // length; the response, if any, is not read.
-                error.ReadFailed, error.EndOfStream => |e| e,
-                error.WriteFailed => mapError(err, connection),
-            };
+        sendBody(&request, req.body) catch |err| return switch (err) {
+            // The caller's reader failed, or ended before the declared
+            // length; the response, if any, is not read.
+            error.ReadFailed, error.EndOfStream => |e| e,
+            error.WriteFailed => mapError(err, connection),
         };
 
-        const response = request.receiveHead(&.{}) catch |err| {
-            // The rest of a rejected response is unread. Never reuse the
-            // connection: std would read to the end of the stream to do so.
-            connection.closing = true;
-            return mapError(err, connection);
-        };
+        const response = request.receiveHead(&.{}) catch |err| return mapError(err, connection);
         return self.readResponse(&request, response.head, req, arena);
     }
 
@@ -486,7 +479,7 @@ pub const HttpTransport = struct {
         // The head lives in the connection's read buffer, which reading the
         // body overwrites, so copy the headers out first.
         const headers = try collectHeaders(head, arena);
-        try checkFraming(headers, connection);
+        try checkFraming(headers);
         if (req.head_out) |out| out.* = .{ .status = status, .headers = headers };
         if (status < 200) {
             // An informational response precedes the real one, which this
@@ -525,10 +518,8 @@ pub const HttpTransport = struct {
         to_writer: ?*std.Io.Writer,
         arena: Allocator,
     ) StreamError!ReadBody {
-        const connection = request.connection.?;
         // A body wanted as sent is not decoded, whatever it says it is.
         const encoding: http.ContentEncoding = if (accept == .gzip_as_sent) .identity else head.content_encoding;
-        const decompress_buffer = try decoderBuffer(encoding, connection, arena);
         var transfer_buffer: [64]u8 = undefined;
         var dechunker: Dechunker = undefined;
         const chunked = head.transfer_encoding == .chunked;
@@ -545,15 +536,17 @@ pub const HttpTransport = struct {
         var inflate: flate.Decompress = undefined;
         const reader: *std.Io.Reader = switch (encoding) {
             .identity => transfer,
-            .gzip => r: {
-                inflate = .init(transfer, .gzip, decompress_buffer);
+            .gzip, .deflate => r: {
+                // The window the decoder needs, in the caller's arena.
+                const window = try arena.alloc(u8, flate.max_window_len);
+                inflate = .init(transfer, if (encoding == .gzip) .gzip else .zlib, window);
                 break :r &inflate.reader;
             },
-            .deflate => r: {
-                inflate = .init(transfer, .zlib, decompress_buffer);
-                break :r &inflate.reader;
-            },
-            .zstd, .compress => unreachable,
+            // std refuses an encoding the request did not accept, and it
+            // accepts only gzip and deflate, so these arrive only if std
+            // changes. zstd would need a larger window than std's own table
+            // gives, and a smaller one fails an assertion.
+            .zstd, .compress => return error.HttpProtocolError,
         };
         const source: BodySource = .{ .request = request, .dechunker = if (chunked) &dechunker else null, .transfer = transfer, .encoding = encoding };
         var check: TrailerCheck = .{};
@@ -562,7 +555,7 @@ pub const HttpTransport = struct {
         else
             .{ .body = try bufferBody(reader, self.max_response_bytes, &check, source, arena) };
         try finishFraming(source, head.content_length);
-        if (encoding != .identity) try check.against(inflate.container_metadata, connection);
+        if (encoding != .identity) try check.against(inflate.container_metadata);
         return read;
     }
 
@@ -620,22 +613,16 @@ pub const HttpTransport = struct {
     /// as `+2`, which std reads as 2 and another parser need not (the class
     /// of hyper's CVE-2021-32715). Either can put the next response on this
     /// connection out of step, so the connection is closed.
-    fn checkFraming(headers: []const Header, connection: *http.Client.Connection) Error!void {
+    fn checkFraming(headers: []const Header) Error!void {
         var length = false;
         var encoding = false;
         for (headers) |h| {
             if (std.ascii.eqlIgnoreCase(h.name, "transfer-encoding")) encoding = true;
             if (!std.ascii.eqlIgnoreCase(h.name, "content-length")) continue;
             length = true;
-            if (!isDigits(std.mem.trim(u8, h.value, " \t"))) {
-                connection.closing = true;
-                return error.HttpProtocolError;
-            }
+            if (!isDigits(std.mem.trim(u8, h.value, " \t"))) return error.HttpProtocolError;
         }
-        if (length and encoding) {
-            connection.closing = true;
-            return error.HttpProtocolError;
-        }
+        if (length and encoding) return error.HttpProtocolError;
     }
 
     /// Every header of `head`, copied into `arena`. std.http bounds the head
@@ -759,27 +746,10 @@ const BodySource = struct {
     }
 };
 
-/// The window a compressed body's decoder needs, in `arena`. std refuses an
-/// encoding the request did not accept, and it accepts only gzip and
-/// deflate, so zstd and compress arrive only if std changes. Refuse them
-/// here too: zstd would need a larger buffer than std's own table gives,
-/// and a smaller one fails an assertion.
-fn decoderBuffer(encoding: http.ContentEncoding, connection: *http.Client.Connection, arena: Allocator) Error![]u8 {
-    return switch (encoding) {
-        .identity => &.{},
-        .gzip, .deflate => try arena.alloc(u8, flate.max_window_len),
-        .zstd, .compress => {
-            connection.closing = true;
-            return error.HttpProtocolError;
-        },
-    };
-}
-
 /// A body streamed into `w` as it arrives, through a buffer of the
 /// transport's own: the readers in the chain need somewhere writable, and a
 /// caller's unbuffered writer has nowhere. Returns the bytes delivered.
 fn streamBody(reader: *std.Io.Reader, w: *std.Io.Writer, check: *TrailerCheck, source: BodySource) StreamError!u64 {
-    const connection = source.request.connection.?;
     var forward_buffer: [4096]u8 = undefined;
     var forward: ForwardWriter = .init(w, &forward_buffer);
     if (source.encoding != .identity) forward.check = check;
@@ -787,14 +757,9 @@ fn streamBody(reader: *std.Io.Reader, w: *std.Io.Writer, check: *TrailerCheck, s
     while (true) {
         const n = reader.stream(&forward.writer, .unlimited) catch |err| switch (err) {
             error.EndOfStream => break,
-            // The caller's writer failed; the rest of the body is
-            // abandoned, so the connection cannot be reused.
-            error.WriteFailed => {
-                connection.closing = true;
-                return error.WriteFailed;
-            },
+            // The caller's writer failed; the rest of the body is abandoned.
+            error.WriteFailed => return error.WriteFailed,
             error.ReadFailed => {
-                connection.closing = true;
                 // What arrived before the failure still belongs to the
                 // caller; a resume counts on having it.
                 forward.writer.flush() catch return error.WriteFailed;
@@ -804,28 +769,19 @@ fn streamBody(reader: *std.Io.Reader, w: *std.Io.Writer, check: *TrailerCheck, s
         streamed += n;
         // What arrived goes on now, not when the buffer fills: a streamed
         // answer's next message may be a while coming.
-        forward.writer.flush() catch {
-            connection.closing = true;
-            return error.WriteFailed;
-        };
+        try forward.writer.flush();
     }
-    forward.writer.flush() catch {
-        connection.closing = true;
-        return error.WriteFailed;
-    };
+    try forward.writer.flush();
     return streamed;
 }
 
 /// A body read whole into `arena`, up to `max` bytes after decoding.
 fn bufferBody(reader: *std.Io.Reader, max: usize, check: *TrailerCheck, source: BodySource, arena: Allocator) StreamError![]const u8 {
     // `allocRemaining` takes up to the limit and fails past it.
-    const body = reader.allocRemaining(arena, .limited(max)) catch |err| {
-        source.request.connection.?.closing = true;
-        return switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            error.StreamTooLong => error.ResponseTooLarge,
-            error.ReadFailed => source.fail(),
-        };
+    const body = reader.allocRemaining(arena, .limited(max)) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.StreamTooLong => error.ResponseTooLarge,
+        error.ReadFailed => source.fail(),
     };
     if (source.encoding != .identity) check.update(body);
     return body;
@@ -838,33 +794,23 @@ fn bufferBody(reader: *std.Io.Reader, max: usize, check: *TrailerCheck, source: 
 /// reports as a normal end.
 fn finishFraming(source: BodySource, content_length: ?u64) Error!void {
     const request = source.request;
-    const connection = request.connection.?;
     // A decompressor stops at the end of its own stream, which can leave
     // the last chunk unread (Google's front end sends gzip in chunks).
     if (source.encoding != .identity) {
-        const extra = source.transfer.discardRemaining() catch {
-            connection.closing = true;
+        const extra = source.transfer.discardRemaining() catch
             return bodyError(request, source.dechunker, source.transfer, .identity);
-        };
         // What the framing held past the compressed stream is content, not
         // framing: a second gzip member, or bytes after a zlib stream. std's
         // decoder reads one member; refused rather than dropped, so a body is
         // never cut short in silence.
-        if (extra > 0) {
-            connection.closing = true;
-            return error.HttpProtocolError;
-        }
+        if (extra > 0) return error.HttpProtocolError;
     }
     if (source.dechunker) |d| {
-        if (!d.done()) {
-            connection.closing = true;
-            return error.ConnectionResetByPeer;
-        }
+        if (!d.done()) return error.ConnectionResetByPeer;
         // Framing ended exactly at the terminating chunk; the next response
         // starts here.
         request.reader.state = .ready;
     } else if (content_length != null and request.reader.state != .ready) {
-        connection.closing = true;
         return error.ConnectionResetByPeer;
     }
 }
@@ -884,15 +830,13 @@ const TrailerCheck = struct {
         c.count += bytes.len;
     }
 
-    fn against(c: *TrailerCheck, metadata: flate.Container.Metadata, connection: *http.Client.Connection) Error!void {
+    fn against(c: *TrailerCheck, metadata: flate.Container.Metadata) Error!void {
         const ok = switch (metadata) {
             .gzip => |g| g.crc == c.crc.final() and g.count == @as(u32, @truncate(c.count)),
             .zlib => |z| z.adler == c.adler.adler,
             .raw => true,
         };
-        if (ok) return;
-        connection.closing = true;
-        return error.HttpProtocolError;
+        if (!ok) return error.HttpProtocolError;
     }
 };
 
@@ -931,13 +875,7 @@ fn sendBody(
         .stream => |source| {
             request.transfer_encoding = .{ .content_length = source.len };
             var body_writer = try request.sendBodyUnflushed(&body_buffer);
-            var left = source.len;
-            while (left > 0) {
-                left -= source.reader.stream(&body_writer.writer, .limited64(left)) catch |err| switch (err) {
-                    error.EndOfStream => return error.EndOfStream,
-                    error.ReadFailed, error.WriteFailed => |e| return e,
-                };
-            }
+            try source.reader.streamExact64(&body_writer.writer, source.len);
             try body_writer.end();
             try request.connection.?.flush();
         },
