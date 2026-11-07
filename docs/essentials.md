@@ -85,7 +85,10 @@ reach); `error_body_out` keeps a refused body for a caller that
 reads more of it than `Diagnostics` does; `head_out` hands out each
 attempt's status and headers, a success's too, as a long-running write's
 202 and the `Location` or `Azure-AsyncOperation` it names (null when the
-latest attempt got no response, and from `executeDiscard`). The loop logs
+latest attempt got no response, and from `executeDiscard`); `timeout_ms`
+sets one attempt's time limit in place of the engine's, 0 none. A
+`StreamCall` has each of these too, and adds `sink`, `accept_encoding` and
+`restart` for a body that goes to a writer. The loop logs
 the method, the path without its query, the status and the time, never a
 token.
 
@@ -93,12 +96,14 @@ A library may wrap `Call` and `StreamCall` in types of its own, as gcp.zig
 does for its per-call quota project, and copy their fields across. A field
 a later release adds (0.2.0's `head_out` and `content_type`) then never
 reaches its modules until it copies that too, and nothing fails. A test
-beside the wrapper catches it on the bump:
+beside the wrapper catches it on the bump, a field's type as well as its
+name:
 
 ```zig
 test "every rest_core.loop.Call field has a counterpart in Call" {
-    inline for (comptime std.meta.fieldNames(rest_core.loop.Call)) |name| {
+    inline for (@typeInfo(rest_core.loop.Call).@"struct".field_names) |name| {
         try std.testing.expect(@hasField(Call, name));
+        try std.testing.expect(@FieldType(Call, name) == @FieldType(rest_core.loop.Call, name));
     }
 }
 ```

@@ -53,6 +53,14 @@ Until 1.0, minor versions may break the API; each entry says how.
   `OutOfMemory` from `refusal` now ends the call, as it did from
   `bodyDelayMs`; it went to `retryable` before. Breaks: a hook that broke
   a rule. gcp.zig's and azure.zig's keep them.
+- `Call.timeout_ms`, and `StreamCall.wipe` and `StreamCall.error_body_out`:
+  each entry had a field the other lacked for no reason the streaming
+  path gives, so a buffered call could not set its own time limit, a
+  streaming one could not wipe its token and URL, nor read a refused
+  body (which is buffered whatever the sink). A test now holds the two
+  to the same field under the same name, and lists what only one has and
+  why. A wrapper that copies `Call`'s fields across gets one more;
+  docs/essentials.md's test for one now compares types as well as names.
 
 ## 0.2.1 (2026-11-06)
 
