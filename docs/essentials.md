@@ -126,6 +126,20 @@ port written out (`https://prices.azure.com:443/...`, as Azure's Retail
 Prices API writes its next pages) the same as none. Userinfo, another
 port, and an empty port are refused.
 
+## Signing each attempt
+
+An engine can sign each attempt in place of sending a bearer token, as
+Azure Storage's Shared Key and AWS's SigV4 do: set `engine.signer` to a
+`loop.Signer`. The loop calls it once an attempt's headers are final, on
+every attempt afresh, so a retry's date and signature are its own, and
+sends the headers it returns, each in place of any header of the same
+name. It is given a `loop.Signable`: the method, the whole URL, the
+headers, the Content-Type and Content-Length the transport will send, and
+the body's bytes to hash when the loop holds them (a body streamed from a
+reader comes by its length alone). With a signer the token provider is
+not asked and its headers are not sent, and an `unauthenticated` engine
+never signs.
+
 ## A cloud's hook
 
 The `Cloud` an engine is made with is a namespace of four declarations,
