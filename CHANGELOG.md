@@ -2,8 +2,26 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
-## Unreleased
+## 0.3.0 (2026-11-07)
 
+The fixes from an audit of the whole library (2026-11-06), each with a
+test that failed before it. Breaks, each marked below: a cloud's hook
+that broke one of `Engine`'s rules no longer compiles; `FakeTransport`
+refuses what `HttpTransport` refuses, and answers a 204, 304 or 1xx
+with no body; and a wrapper that copies `Call`'s or `StreamCall`'s
+fields across has three more to copy. gcp.zig's and azure.zig's suites
+pass against it but for that last.
+
+- `Engine` checks a cloud's hook when it binds it: each of the four
+  declarations `pub`, `RefusalError` a named set rather than `anyerror`
+  (which made every consumer's error set `anyerror`), and none of its
+  names but `OutOfMemory` one the transport or the token provider
+  returns too (a 408 called `TimedOut` was retried as the transport's).
+  A hook that breaks one fails to compile there, with a message saying
+  which, where it failed at a use site deep in the loop, or not at all.
+  `OutOfMemory` from `refusal` now ends the call, as it did from
+  `bodyDelayMs`; it went to `retryable` before. Breaks: a hook that broke
+  a rule. gcp.zig's and azure.zig's keep them.
 - `testing.FakeTransport` refuses what `HttpTransport` refuses before it
   connects: a URL that would go out other than as written
   (`error.InvalidEndpoint`), and a header HTTP cannot carry or the
@@ -13,11 +31,6 @@ Until 1.0, minor versions may break the API; each entry says how.
   not recorded and does not use a scripted reply. The check is public,
   `transport.checkRequest`, for a `Transport` of one's own. Breaks: a
   test that sent such a request through the fake now gets the error.
-- Fixed: `testing.FakeClock.sleepMs` read a sleep never made from
-  memory never set, so `expectEqual(0, clock.sleepMs(1))` could pass
-  after the code stopped sleeping; it panics now. A deadline already
-  past moved the clock back and recorded a negative sleep; it returns at
-  once and records none, as a real `Io` does.
 - Fixed: `testing.FakeTransport` answered unlike `HttpTransport` in three
   ways. A 204, 304 or 1xx came back with the canned body (`"{}"` by
   default) and streamed it into a writer sink; such an answer ends at
@@ -26,22 +39,74 @@ Until 1.0, minor versions may break the API; each entry says how.
   recorded with none. And `send` ignored `cut_after`, though `Canned`
   says a buffered reply cut short fails; it returns `cut_error` now.
   Breaks: a test that read a 204's or 304's body from the fake.
-- Fixed: `testing.ScriptedServer` copied a request's head into its
-  2 KiB slot with no bound, so a long bearer token (an Entra ID JWT runs
-  past 2 KiB) panicked in a safe build and wrote past the slot in
-  ReleaseFast; the head is kept to the slot like the body, and a head
-  line may run to 16 KiB. It never hangs a test: a cancel while it
-  lingers ends the run (the linger swallowed it, and the run went back
-  to accept for good), and a client that closes before its next request
-  ends that connection, not the run, so the next connection is served.
-  `request()` and `url()` panic with a message where they read out of
-  bounds or reached `unreachable`.
+- `Call.timeout_ms`, and `StreamCall.wipe` and `StreamCall.error_body_out`:
+  each entry had a field the other lacked for no reason the streaming
+  path gives, so a buffered call could not set its own time limit, a
+  streaming one could not wipe its token and URL, nor read a refused
+  body (which is buffered whatever the sink). A test now holds the two
+  to the same field under the same name, and lists what only one has and
+  why. A wrapper that copies `Call`'s fields across gets one more;
+  docs/essentials.md's test for one now compares types as well as names.
+- Fixed: when the caller's arena ran out after a response's head (copying
+  its headers, or the 64 KiB window a gzip or deflate body needs),
+  `HttpTransport` kept the connection, and releasing the request had
+  std drain the rest of the body with its own chunked decoder: with no
+  bound, and on a chunk size near 2^64 a panic in a safe build and
+  undefined in ReleaseFast. The connection is closed now, as on every
+  other failure after the head (security catalog RESP-02).
+- Fixed: a canceled call could be retried, and its canceler wait out
+  every retry. `HttpTransport` reported a cancel that landed while it
+  drained a compressed body that would not decode as a dropped
+  connection, which is retried, and the loop asked `retryable` about
+  `error.Canceled` too, so a widened one sent the call again. The
+  transport returns `error.Canceled` there now, and the loop never
+  retries it, whatever `retryable` says (security catalog RETRY-04).
+- Fixed: a call canceled during the wait before a retry left
+  `Diagnostics` describing the failure before it (an HTTP 503, say),
+  though the call returned `error.Canceled` and `Diagnostics` says a
+  cancellation has no status. It says Canceled now.
+- Fixed: `Call.wipe` left the bearer token readable after the call.
+  `HttpTransport` formats `Bearer <token>` into the arena it is given,
+  which `execute` passes as the caller's response arena, so the token
+  sat beside the result for as long as the caller kept it. The transport
+  zeroes that header once the request is sent. std's own copy, in its
+  pooled connection's write buffer, is out of reach; `wipe`'s doc says
+  so (security catalog SECRET-05).
+- Fixed: `StreamCall.restart` was asked on every transport failure with
+  a writer sink, before the engine had decided to retry, so on a last
+  attempt, a failure not retried, or any `executeStreamBody` failure the
+  sink was emptied and the part of the body a resume counts on was lost.
+  It is asked only once a retry is decided.
+- Fixed: two slips in a `Transport` of your own were undefined in
+  ReleaseFast. `executeStream` took `error.ReadFailed` and
+  `error.EndOfStream` as unreachable when no streamed body was given,
+  though `StreamError` allows them on any request; they are now the
+  transport's own short body, `error.ConnectionResetByPeer`, retried as
+  one. `Transport.sendStream` through a vtable with no `sendStream` (a
+  fake that sets `send` only) panics in every mode, where it unwrapped a
+  null.
+- Fixed: `loop.pathOnOrigin` passed a path with a dot-segment, so
+  `https://h.example/v1/../admin` (or `%2e%2e`) under a base of
+  `https://h.example/v1` came back as `/../admin`, which a normalizing
+  server serves outside `/v1`. Such a path, its dots written or encoded,
+  is refused now. `Engine.base_url`'s doc says a path may follow the
+  origin, as the loop has always taken one.
+- Fixed: `Diagnostics.print` could end a message that overflowed its
+  buffer in half a UTF-8 sequence, though `message()` promises a
+  boundary, and formatting a message from `d.message()` aliased the
+  buffer it was writing (a panic in a safe build, undefined in
+  ReleaseFast). It formats apart from the buffer, then cuts and copies.
 - Fixed: `rsa.parsePem` took a private key whose public exponent ran
   past 32 bits, which `PublicKey.fromSpki` refuses, and `writeSpki` sizes
   its output for. A 4096-bit key with a 22-byte or longer exponent then
   made `publicKey().writeSpki` panic in a safe build and spin for ever in
   ReleaseFast. Such a key is `error.UnsupportedKey` now (security catalog
   RSA-04).
+- Fixed: `rsa.parsePem` called a key too big for it (an 8192-bit one)
+  `InvalidPrivateKey`, which a caller reports as a file that is not a
+  PEM key at all; it is `UnsupportedKey`, as `ParseError` says. And
+  `base64.decode` kept what it allocated when the text was not base64,
+  which leaked under any allocator but an arena; it frees it now.
 - Fixed: three stack buffers that held an RSA secret were never wiped: a
   refused key's `d` (`parsePem` copied it, then failed on the primes),
   the columns of (p - 1)(q - 1) before their carries, and the signing
@@ -63,83 +128,26 @@ Until 1.0, minor versions may break the API; each entry says how.
   the years 1 to 9999 with an assert alone, so a caller's far-future
   sentinel overflowed the fixed buffer into `unreachable` in ReleaseFast.
   An instant past either end is written as that end now.
-- Fixed: a call canceled during the wait before a retry left
-  `Diagnostics` describing the failure before it (an HTTP 503, say),
-  though the call returned `error.Canceled` and `Diagnostics` says a
-  cancellation has no status. It says Canceled now.
+- Fixed: `testing.FakeClock.sleepMs` read a sleep never made from
+  memory never set, so `expectEqual(0, clock.sleepMs(1))` could pass
+  after the code stopped sleeping; it panics now. A deadline already
+  past moved the clock back and recorded a negative sleep; it returns at
+  once and records none, as a real `Io` does.
+- Fixed: `testing.ScriptedServer` copied a request's head into its
+  2 KiB slot with no bound, so a long bearer token (an Entra ID JWT runs
+  past 2 KiB) panicked in a safe build and wrote past the slot in
+  ReleaseFast; the head is kept to the slot like the body, and a head
+  line may run to 16 KiB. It never hangs a test: a cancel while it
+  lingers ends the run (the linger swallowed it, and the run went back
+  to accept for good), and a client that closes before its next request
+  ends that connection, not the run, so the next connection is served.
+  `request()` and `url()` panic with a message where they read out of
+  bounds or reached `unreachable`.
 - Fixed: in a test build, `logging.Scoped(...).capture.text()` past its
   64 KiB returned the whole buffer, its tail bytes never written in that
   test, so a "never contains" check could fail, or a "contains" one
   pass, on stale bytes. A line that does not fit now takes no room, and
   `capture.dropped` counts such lines.
-- Fixed: `rsa.parsePem` called a key too big for it (an 8192-bit one)
-  `InvalidPrivateKey`, which a caller reports as a file that is not a
-  PEM key at all; it is `UnsupportedKey`, as `ParseError` says. And
-  `base64.decode` kept what it allocated when the text was not base64,
-  which leaked under any allocator but an arena; it frees it now.
-- Fixed: `loop.pathOnOrigin` passed a path with a dot-segment, so
-  `https://h.example/v1/../admin` (or `%2e%2e`) under a base of
-  `https://h.example/v1` came back as `/../admin`, which a normalizing
-  server serves outside `/v1`. Such a path, its dots written or encoded,
-  is refused now. `Engine.base_url`'s doc says a path may follow the
-  origin, as the loop has always taken one.
-- Fixed: when the caller's arena ran out after a response's head (copying
-  its headers, or the 64 KiB window a gzip or deflate body needs),
-  `HttpTransport` kept the connection, and releasing the request had
-  std drain the rest of the body with its own chunked decoder: with no
-  bound, and on a chunk size near 2^64 a panic in a safe build and
-  undefined in ReleaseFast. The connection is closed now, as on every
-  other failure after the head (security catalog RESP-02).
-- Fixed: a canceled call could be retried, and its canceler wait out
-  every retry. `HttpTransport` reported a cancel that landed while it
-  drained a compressed body that would not decode as a dropped
-  connection, which is retried, and the loop asked `retryable` about
-  `error.Canceled` too, so a widened one sent the call again. The
-  transport returns `error.Canceled` there now, and the loop never
-  retries it, whatever `retryable` says (security catalog RETRY-04).
-- Fixed: `Call.wipe` left the bearer token readable after the call.
-  `HttpTransport` formats `Bearer <token>` into the arena it is given,
-  which `execute` passes as the caller's response arena, so the token
-  sat beside the result for as long as the caller kept it. The transport
-  zeroes that header once the request is sent. std's own copy, in its
-  pooled connection's write buffer, is out of reach; `wipe`'s doc says
-  so (security catalog SECRET-05).
-- Fixed: `StreamCall.restart` was asked on every transport failure with
-  a writer sink, before the engine had decided to retry, so on a last
-  attempt, a failure not retried, or any `executeStreamBody` failure the
-  sink was emptied and the part of the body a resume counts on was lost.
-  It is asked only once a retry is decided.
-- Fixed: two slips in a `Transport` of your own were undefined in
-  ReleaseFast. `executeStream` took `error.ReadFailed` and
-  `error.EndOfStream` as unreachable when no streamed body was given,
-  though `StreamError` allows them on any request; they are now the
-  transport's own short body, `error.ConnectionResetByPeer`, retried as
-  one. `Transport.sendStream` through a vtable with no `sendStream` (a
-  fake that sets `send` only) panics in every mode, where it unwrapped a
-  null.
-- Fixed: `Diagnostics.print` could end a message that overflowed its
-  buffer in half a UTF-8 sequence, though `message()` promises a
-  boundary, and formatting a message from `d.message()` aliased the
-  buffer it was writing (a panic in a safe build, undefined in
-  ReleaseFast). It formats apart from the buffer, then cuts and copies.
-- `Engine` checks a cloud's hook when it binds it: each of the four
-  declarations `pub`, `RefusalError` a named set rather than `anyerror`
-  (which made every consumer's error set `anyerror`), and none of its
-  names but `OutOfMemory` one the transport or the token provider
-  returns too (a 408 called `TimedOut` was retried as the transport's).
-  A hook that breaks one fails to compile there, with a message saying
-  which, where it failed at a use site deep in the loop, or not at all.
-  `OutOfMemory` from `refusal` now ends the call, as it did from
-  `bodyDelayMs`; it went to `retryable` before. Breaks: a hook that broke
-  a rule. gcp.zig's and azure.zig's keep them.
-- `Call.timeout_ms`, and `StreamCall.wipe` and `StreamCall.error_body_out`:
-  each entry had a field the other lacked for no reason the streaming
-  path gives, so a buffered call could not set its own time limit, a
-  streaming one could not wipe its token and URL, nor read a refused
-  body (which is buffered whatever the sink). A test now holds the two
-  to the same field under the same name, and lists what only one has and
-  why. A wrapper that copies `Call`'s fields across gets one more;
-  docs/essentials.md's test for one now compares types as well as names.
 
 ## 0.2.1 (2026-11-06)
 
