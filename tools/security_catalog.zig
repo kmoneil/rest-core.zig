@@ -1,4 +1,4 @@
-// From yaml.zig tools/security_catalog.zig at 9fe87e9 (itself after ekur's, ekur t65); here its paths are joined with '/' on every OS.
+// From yaml.zig tools/security_catalog.zig at 9c5e924 (itself after ekur's, ekur t65); here a test that never runs is not covered (rest-core t52).
 //! `security-catalog CATALOG.md DIR`: checks the security catalog against
 //! the tests, so the two cannot drift apart. After ekur's, less its
 //! compile-error fixtures.
@@ -160,6 +160,15 @@ const Checker = struct {
         return runs;
     }
 
+    /// A test file's path as the catalog names it: under `dir_path`, its
+    /// separators `/`, which the walker gives as the system writes them
+    /// (`\` on Windows, found by rest-core.zig's Windows CI, t57).
+    fn catalogPath(arena: std.mem.Allocator, dir_path: []const u8, entry_path: []const u8) ![]u8 {
+        const path = try std.mem.concat(arena, u8, &.{ dir_path, "/", entry_path });
+        std.mem.replaceScalar(u8, path, '\\', '/');
+        return path;
+    }
+
     /// Reports each `security: ...` test under `dir_path` no row names.
     fn unnamedTests(c: *Checker, dir_path: []const u8) !void {
         var dir = try c.root.openDir(c.io, dir_path, .{ .iterate = true });
@@ -167,10 +176,7 @@ const Checker = struct {
         var walker = try dir.walk(c.arena);
         while (try walker.next(c.io)) |entry| {
             if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".zig")) continue;
-            // With `/`, as the catalog names files, whatever the OS joins
-            // with: on Windows the walker's own paths use `\`.
-            const path = try c.arena.print("{s}/{s}", .{ dir_path, entry.path });
-            std.mem.replaceScalar(u8, path, '\\', '/');
+            const path = try catalogPath(c.arena, dir_path, entry.path);
             const src = try c.root.readFileAlloc(c.io, path, c.arena, .limited(16 << 20));
             var at: usize = 0;
             while (std.mem.findPos(u8, src, at, "test \"security: ")) |i| {
@@ -298,4 +304,11 @@ test "a catalog with no rows is a problem" {
     const got = try checked(header, &.{ tests_file, root_file });
     defer std.testing.allocator.free(got);
     try std.testing.expect(std.mem.find(u8, got, "CATALOG.md has no rows") != null);
+}
+
+test "a test file's path is the catalog's, its separators /" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings("test/security/rsa_test.zig", try Checker.catalogPath(arena.allocator(), "test/security", "rsa_test.zig"));
+    try std.testing.expectEqualStrings("test/security/sub/a_test.zig", try Checker.catalogPath(arena.allocator(), "test/security", "sub\\a_test.zig"));
 }
