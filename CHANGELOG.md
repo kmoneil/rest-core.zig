@@ -2,7 +2,11 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
-## Unreleased
+## 0.5.0 (2026-11-07)
+
+A signer for each attempt, for clients that sign requests rather than
+send a bearer token, and a correction to the wrapper test the essentials
+suggest. No breaks.
 
 - `loop.Signer` and `Engine.signer`: an engine can sign each attempt in
   place of a bearer token, as Azure Storage's Shared Key and AWS's SigV4
@@ -13,6 +17,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   caller that signed once per call (and held its retries inside the
   signature's window) can sign each attempt instead. docs/essentials.md
   has a section on it.
+- docs/essentials.md: the test it suggests beside a wrapper of `Call`
+  takes a field narrowed from `?T` to `T` with a default of the
+  wrapper's own (as gcp.zig's `retryable`), where it demanded the same
+  type, and it suggests a second test, that the wrapper copies every
+  field across, which the first cannot see.
 
 ## 0.4.0 (2026-11-07)
 
