@@ -21,6 +21,12 @@ Until 1.0, minor versions may break the API; each entry says how.
   `HttpTransport` and `FakeTransport` alike, where it was
   `NetworkFailure`. A timed request starts its timer before its own
   task, so when the second cannot start, nothing has been sent.
+- Fixed: after a compressed body, the transport read the whole rest of
+  its framing to see whether anything followed, and after one that would
+  not decode, to tell a dropped connection from a bad body: a server
+  sending endless chunks kept an untimed caller reading. The first needs
+  one byte now, and the second stops past `max_response_bytes`, the body
+  then `error.HttpProtocolError`.
 
 ## 0.3.0 (2026-11-07)
 

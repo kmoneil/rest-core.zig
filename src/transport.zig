@@ -553,7 +553,13 @@ pub const HttpTransport = struct {
             // gives, and a smaller one fails an assertion.
             .zstd, .compress => return error.HttpProtocolError,
         };
-        const source: BodySource = .{ .request = request, .dechunker = if (chunked) &dechunker else null, .transfer = transfer, .encoding = encoding };
+        const source: BodySource = .{
+            .request = request,
+            .dechunker = if (chunked) &dechunker else null,
+            .transfer = transfer,
+            .encoding = encoding,
+            .max_drain = self.max_response_bytes,
+        };
         var check: TrailerCheck = .{};
         const read: ReadBody = if (to_writer) |w|
             .{ .streamed = try streamBody(reader, w, &check, source) }
@@ -752,9 +758,12 @@ const BodySource = struct {
     dechunker: ?*Dechunker,
     transfer: *std.Io.Reader,
     encoding: http.ContentEncoding,
+    /// How much of the framing a failed decode drains to tell a dropped
+    /// connection from a bad body: the response limit.
+    max_drain: usize,
 
     fn fail(s: BodySource) Error {
-        return bodyError(s.request, s.dechunker, s.transfer, s.encoding);
+        return bodyError(s.request, s.dechunker, s.transfer, s.encoding, s.max_drain);
     }
 };
 
@@ -809,8 +818,10 @@ fn finishFraming(source: BodySource, content_length: ?u64) Error!void {
     // A decompressor stops at the end of its own stream, which can leave
     // the last chunk unread (Google's front end sends gzip in chunks).
     if (source.encoding != .identity) {
-        const extra = source.transfer.discardRemaining() catch
-            return bodyError(request, source.dechunker, source.transfer, .identity);
+        // One byte is the verdict: anything at all after the stream is
+        // content. Read on, endless chunks would hold an untimed caller.
+        const extra = source.transfer.discardShort(1) catch
+            return bodyError(request, source.dechunker, source.transfer, .identity, 0);
         // What the framing held past the compressed stream is content, not
         // framing: a second gzip member, or bytes after a zlib stream. std's
         // decoder reads one member; refused rather than dropped, so a body is
@@ -901,6 +912,7 @@ fn bodyError(
     dechunker: ?*Dechunker,
     transfer: *std.Io.Reader,
     encoding: http.ContentEncoding,
+    max_drain: usize,
 ) Error {
     const connection = request.connection.?;
     if (dechunker) |d| if (d.err) |err| return err;
@@ -908,11 +920,15 @@ fn bodyError(
     if (encoding == .identity) return socketOk(connection);
     // The decoder failed. If the framing ends early too, the connection
     // dropped mid-body; if the framing is whole, the body itself is bad.
-    _ = transfer.discardRemaining() catch {
+    // Read no further than the response limit to tell: past it, the body
+    // is bad whatever its framing, on the buffered path and the streamed.
+    const drained = transfer.discardShort(max_drain +| 1) catch d: {
         // A socket error in the drain is the answer, a cancel among them:
         // the framing's state would call it a dropped connection, retried.
         if (connection.stream_reader.err) |err| return mapError(err, null);
+        break :d 0;
     };
+    if (drained > max_drain) return error.HttpProtocolError;
     const framing_complete = if (dechunker) |d|
         d.done()
     else
@@ -3173,6 +3189,43 @@ fn expectCanceledMidBody(reply: []const u8, cut: usize, sink: enum { buffer, wri
     const result = pending.cancel(io);
     open.store(true, .release);
     try testing.expectError(error.Canceled, result);
+}
+
+/// Sends a GET whose answer is `reply`, the server then holding the
+/// connection open for more, and expects `want` before the server's pause
+/// runs out: a drain that read on would wait it out.
+fn expectPromptAfterDecode(reply: []const u8, max_response_bytes: usize, want: Error) !void {
+    const io = testing.io;
+    var open: std.atomic.Value(bool) = .init(false);
+    var server: ScriptedServer = try .start(io, &.{reply});
+    defer server.deinit(io);
+    server.pause = .{ .after = reply.len, .open = &open };
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    ht.max_response_bytes = max_response_bytes;
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var buf: [128]u8 = undefined;
+    const result = ht.transport().send(.{ .method = .GET, .url = server.url(&buf, "/v1/o") }, arena.allocator());
+    open.store(true, .release);
+    try testing.expectError(want, result);
+    try serving.await(io);
+    try testing.expect(!server.pause_timed_out);
+}
+
+test "HttpTransport: content after a gzip stream is refused at its first byte, not read to its end" {
+    // A valid member, then chunks that go on: one byte is the verdict.
+    const without_end = zipped_chunks[0 .. zipped_chunks.len - "0\r\n\r\n".len];
+    try expectPromptAfterDecode(zipped_head ++ without_end ++ "4\r\njunk\r\n", default_max_response_bytes, error.HttpProtocolError);
+}
+
+test "HttpTransport: a body that will not decode is drained no further than the response limit" {
+    const junk: [1024]u8 = @splat('y');
+    const chunk = "400\r\n" ++ junk ++ "\r\n";
+    const reply = zipped_head ++ "20\r\n" ++ "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" ++ "\r\n" ++ chunk ++ chunk;
+    try expectPromptAfterDecode(reply, 1024, error.HttpProtocolError);
 }
 
 test "HttpTransport: a cancel mid-body is Canceled, plain or gzip, buffered or to a writer" {
