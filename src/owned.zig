@@ -7,6 +7,7 @@ const WipingAllocator = @import("WipingAllocator.zig");
 
 /// A result plus the arena that holds all of its memory, like `std.json.Parsed`.
 /// One `deinit` frees everything; copy out anything needed after that.
+/// Any task may read the value; `deinit` waits until none is.
 pub fn Owned(comptime T: type) type {
     return struct {
         value: T,
@@ -34,6 +35,7 @@ pub fn Owned(comptime T: type) type {
             return .{ .value = undefined, .arena = &w.arena, .wiping = w };
         }
 
+        /// Frees the value's memory, all of it.
         pub fn deinit(self: *Self) void {
             if (self.wiping) |w| {
                 const gpa = w.wiping.child;

@@ -120,6 +120,7 @@ pub const Asked = struct {
     ms: u32,
     form: Form = .all,
 
+    /// Which header or headers a scripted refusal asks in.
     pub const Form = enum {
         /// `Retry-After`, in whole seconds, rounded up.
         retry_after,

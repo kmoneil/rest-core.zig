@@ -42,6 +42,13 @@ Until 1.0, minor versions may break the API; each entry says how.
   fault fired, so a record that ran out of memory left `fired` false and
   the `after_fault` hook unrun, though the fault took effect. It fires
   first now.
+- Fixed: `testing.ScriptedServer.url` wrote `127.0.0.1` even for a
+  server started on another address (`startOn` with IPv6); it writes the
+  address the server is bound to.
+- Docs: every public type says whether it is thread-safe and who frees
+  what it hands out, and every public declaration has a doc comment.
+  `TokenProvider` says a provider shared by several clients must be
+  thread-safe; `ScriptedServer` says how to start, run and stop it.
 
 ## 0.3.0 (2026-11-07)
 

@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const Stringify = std.json.Stringify;
 const test_util = @import("testing.zig");
 
+/// `decode`'s errors: text that is not base64, or no memory for its bytes.
 pub const Error = error{ InvalidBase64, OutOfMemory };
 
 /// Decodes base64 with or without padding. Accepts the URL-safe alphabet too,

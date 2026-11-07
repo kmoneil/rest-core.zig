@@ -5,6 +5,9 @@
 //! URL and the body are byte for byte what the call sends. Credentials and
 //! other headers are not part of it, so a preview shown or logged carries no
 //! token.
+//!
+//! A value: once built, any task may read it. Its URL and body live in the
+//! arena `fromCall` was given, and go with it.
 
 const PreparedRequest = @This();
 

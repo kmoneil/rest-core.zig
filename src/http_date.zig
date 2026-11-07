@@ -9,6 +9,8 @@ const std = @import("std");
 const timestamp = @import("timestamp.zig");
 const test_util = @import("testing.zig");
 
+/// `parse`'s one error: text in none of RFC 9110's three formats, or an
+/// instant outside `timestamp`'s range.
 pub const ParseError = error{InvalidHttpDate};
 
 /// The length of an IMF-fixdate, the text `format` writes.

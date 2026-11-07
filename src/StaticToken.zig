@@ -2,6 +2,9 @@
 //! A token provider that always returns one token, such as the output of
 //! `gcloud auth print-access-token` or `az account get-access-token`. Such
 //! tokens expire after about an hour.
+//!
+//! Thread-safe: `getToken` only reads the token, and copies it into the
+//! caller's arena.
 
 const StaticToken = @This();
 

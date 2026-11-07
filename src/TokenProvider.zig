@@ -4,6 +4,12 @@
 //! before each request. Where the token comes from (a pasted string, a
 //! metadata service, a CLI's login, a client secret) is the provider's
 //! business.
+//!
+//! Thread-safety is the implementation's. One provider is often shared by
+//! several clients, so `getToken` and `invalidate` can be called from
+//! several tasks at once: a provider shared that way must be thread-safe,
+//! and its doc should say so. `StaticToken` is. A token is handed out as a
+//! copy in the caller's arena, and goes with it.
 
 const TokenProvider = @This();
 
@@ -37,6 +43,7 @@ pub const Error = error{
     InvalidTokenResponse,
 } || transport.Error;
 
+/// What a provider implements.
 pub const VTable = struct {
     /// Returns a bearer token valid for at least the next request, copied
     /// into `arena`: the copy cannot change under the caller, even when the
@@ -61,10 +68,13 @@ pub const VTable = struct {
     headers: ?*const fn (ptr: *anyopaque) []const transport.Header = null,
 };
 
+/// A token valid for at least the next request, copied into `arena`.
 pub fn getToken(self: TokenProvider, io: std.Io, arena: Allocator, scopes: []const []const u8) Error![]const u8 {
     return self.vtable.getToken(self.ptr, io, arena, scopes);
 }
 
+/// Drops a cached token, after a 401 says it died early, so the next
+/// `getToken` fetches a fresh one.
 pub fn invalidate(self: TokenProvider) void {
     self.vtable.invalidate(self.ptr);
 }

@@ -133,12 +133,14 @@ pub const writeStrictSegment = writeValue;
 
 /// Appends query parameters to a path a writer already holds: `?a=1` for the
 /// first, `&b=2` for the rest. Names and values are both percent-encoded, so
-/// the separators in the result are only ever the ones it wrote.
+/// the separators in the result are only ever the ones it wrote. Not
+/// thread-safe: one task writes through it.
 pub const Params = struct {
     w: *Writer,
     /// `?` until the first parameter is written, `&` after it.
     separator: u8 = '?',
 
+    /// Parameters appended to what `w` holds, which has no query yet.
     pub fn init(w: *Writer) Params {
         return .{ .w = w };
     }
@@ -148,6 +150,7 @@ pub const Params = struct {
         return self.separator == '?';
     }
 
+    /// Appends `name=value`, both percent-encoded.
     pub fn add(self: *Params, name: []const u8, value: []const u8) Writer.Error!void {
         try self.w.writeByte(self.separator);
         self.separator = '&';
@@ -165,6 +168,7 @@ pub const Params = struct {
         return self.add(name, text);
     }
 
+    /// Appends `name=` and `value` in decimal.
     pub fn addInt(self: *Params, name: []const u8, value: u64) Writer.Error!void {
         var buf: [20]u8 = undefined;
         return self.add(name, std.fmt.bufPrint(&buf, "{d}", .{value}) catch unreachable);

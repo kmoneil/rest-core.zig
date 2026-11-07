@@ -32,11 +32,14 @@ const Sha256 = sha2.Sha256;
 pub const max_modulus_bits = 4096;
 /// Uploaded keys may be as small as 1024 bits; Google no longer issues them.
 pub const min_modulus_bits = 1024;
+/// The largest modulus, and so signature, in bytes: an `out` this long
+/// holds any signature.
 pub const max_modulus_bytes = max_modulus_bits / 8;
 
 const Modulus = ff.Modulus(max_modulus_bits);
 const Fe = Modulus.Fe;
 
+/// `parsePem`'s and `parsePemInto`'s errors.
 pub const ParseError = error{
     /// Not a PEM private key, or one whose contents do not decode.
     InvalidPrivateKey,
@@ -46,6 +49,7 @@ pub const ParseError = error{
     UnsupportedKey,
 };
 
+/// The signing functions' one error.
 pub const SignError = error{
     /// The signature did not verify against the key's own public exponent:
     /// the key is corrupt, or its parts do not belong together. Or the
@@ -55,11 +59,13 @@ pub const SignError = error{
     SignatureFailed,
 };
 
+/// The verifying functions' one error.
 pub const VerifyError = error{
     /// The signature is not one this key made over this digest.
     SignatureInvalid,
 };
 
+/// `PublicKey.fromSpki`'s errors.
 pub const PublicKeyError = error{
     /// Not a SubjectPublicKeyInfo, or one whose contents do not decode.
     InvalidPublicKey,
@@ -74,6 +80,7 @@ pub const Hash = enum {
     sha384,
     sha512,
 
+    /// The digest's length in bytes.
     pub fn digestLength(h: Hash) usize {
         return switch (h) {
             inline else => |t| t.Type().digest_length,
@@ -109,6 +116,10 @@ pub const Hash = enum {
     }
 };
 
+/// An RSA private key, as `parsePemInto` reads one. Signing reads the key
+/// and nothing else, so any number of tasks may sign with one key at once;
+/// `wipe` and `deinit` wait until none is. It owns no memory: `deinit`
+/// wipes its secrets.
 pub const PrivateKey = struct {
     n: Modulus,
     e: Fe,
@@ -123,6 +134,7 @@ pub const PrivateKey = struct {
     /// The modulus in bytes, which is also every signature's length.
     len: usize,
 
+    /// Wipes the key's secrets and leaves it undefined.
     pub fn deinit(key: *PrivateKey) void {
         key.wipe();
         key.* = undefined;
@@ -680,6 +692,7 @@ fn encodePkcs1(hash: Hash, digest: []const u8, em: []u8) []const u8 {
 // (`openssl dgst -sha256 -sign`) over `test_message`, so these tests
 // check against an independent implementation.
 
+/// The message the test signatures here are over.
 pub const test_message = "sign me, exactly these bytes";
 
 /// A 1024-bit test key: the smallest accepted, and much faster to sign
@@ -703,6 +716,7 @@ pub const test_key_1024 =
     \\-----END PRIVATE KEY-----
 ;
 
+/// OpenSSL's signature over `test_message` with test_key_1024.
 pub const test_sig_1024_hex = "58b79695ef8b5af573d01eb3ab4694c8c75744f1b624d49b0726346d11b08aa2" ++
     "4260ec91ace15c7b3fedeed9c83167d6dd9eddec082ae6724e1ea73d157be4be" ++
     "45a85b007cceed1e05fd7d446dc52feecb1bbc765c559eba408cb6653814cba0" ++
@@ -836,6 +850,7 @@ pub const test_key_ec =
     \\-----END PRIVATE KEY-----
 ;
 
+/// OpenSSL's signature over `test_message` with test_key_2048.
 pub const test_sig_2048_hex = "851f9524baa1ab8010ffad57593e795a6aaded58751fee5fe7d723325d8b7846" ++
     "00b0fb548874cd3ffc0f398a64db35e1b91a009f3d0c1b027e82f9026a3a210e" ++
     "b0430384f311da1e69c4706f39b857fa77c4a765b5b60fa1af916317509dd4e9" ++

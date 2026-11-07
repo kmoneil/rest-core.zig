@@ -59,6 +59,7 @@ pub const RetryableFn = *const fn (err: anyerror, http_status: u16) bool;
 
 /// One request, as a module describes it.
 pub const Call = struct {
+    /// The HTTP method.
     method: transport.Method,
     /// Path and query, starting with `/`. Appended to the base URL.
     path: []const u8,
@@ -117,14 +118,22 @@ pub const Call = struct {
 /// headers included in the result. A body read from a stream cannot be
 /// replayed for a retry; `executeStreamBody` sends one once.
 pub const StreamCall = struct {
+    /// The HTTP method.
     method: transport.Method,
     /// Path and query, appended to the base URL.
     path: []const u8,
     /// The Content-Type sent with the body, verbatim.
     content_type: ?[]const u8 = null,
+    /// As `Call.headers`.
     headers: []const transport.Header = &.{},
+    /// The request body: none, or segments sent back to back, which a
+    /// retry sends again. A body from a reader goes to `executeStreamBody`.
     body: Body = .none,
+    /// Where a success's body goes: buffered into the response arena, or
+    /// written into the caller's writer as it arrives.
     sink: transport.StreamRequest.Sink = .buffer,
+    /// What Accept-Encoding offers, and whether a compressed body is
+    /// decoded on its way to the sink (`transport.StreamRequest`).
     accept_encoding: transport.StreamRequest.AcceptEncoding = .identity,
     /// A writer sink narrows what a retry may repeat: a non-2xx response is
     /// buffered and leaves the writer untouched, so it retries as usual,
@@ -132,6 +141,7 @@ pub const StreamCall = struct {
     /// cannot be taken back, so it is returned instead. Resuming is the
     /// caller's business.
     retry: bool = true,
+    /// As `Call.retryable`.
     retryable: ?RetryableFn = null,
     /// A writer sink that can take the body again from its first byte:
     /// after a transport failure mid-body, once the engine has decided to
@@ -154,12 +164,14 @@ pub const StreamCall = struct {
     /// whatever the sink.
     error_body_out: ?*?[]const u8 = null,
 
+    /// A request body that a retry can send again.
     pub const Body = union(enum) {
         none,
         /// Sent back to back with an exact Content-Length; replayable.
         segments: []const []const u8,
     };
 
+    /// A writer sink's way to start over; see `restart`.
     pub const Restart = struct {
         ptr: *anyopaque,
         /// Whether the sink has made itself ready for the body again.
@@ -173,11 +185,22 @@ pub const StreamBody = struct {
     len: u64,
 };
 
+/// The request loop, bound to a module's log scope and a cloud's hook (this
+/// file's doc says what the hook holds). A client fills one in and calls
+/// it. Not thread-safe across calls that share its `transport` (an
+/// `HttpTransport` is not), its `diagnostics` or `server_delay_out`: give
+/// concurrent calls their own. What `execute` returns lives in the
+/// caller's `response` arena; what the loop allocates for a call, in
+/// `gpa`, is freed before the call returns.
 pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
     comptime checkCloud(Cloud);
     return struct {
+        /// For the loop's own memory during a call: the URL, the headers,
+        /// the token's copy. Freed before the call returns.
         gpa: Allocator,
+        /// The clock, sleeps between retries and the jitter's randomness.
         io: std.Io,
+        /// What sends each attempt.
         transport: Transport,
         /// Scheme, host and port, and a path every call's goes after if
         /// the service has one (`https://h.example/v1`), with no trailing
@@ -198,8 +221,13 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
         /// gcp.zig's clients offer with `send_quota_project = false`, the
         /// token still goes; an `unauthenticated` engine sends neither.
         send_credential_headers: bool = true,
+        /// How many attempts, and the backoff between them.
         retry: RetryPolicy = .{},
+        /// Each attempt's time limit, in place of none; 0 is no limit. A
+        /// call's own `timeout_ms` takes its place.
         request_timeout_ms: u32 = 0,
+        /// Filled with what the server said about a failed call, and
+        /// cleared by one that succeeds. Not shared by concurrent calls.
         diagnostics: ?*Diagnostics = null,
         /// Set before each attempt to the delay its response asked for,
         /// or null: for a module's own retry loop, which makes its calls
