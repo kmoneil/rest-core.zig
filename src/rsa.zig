@@ -195,9 +195,11 @@ pub const PrivateKey = struct {
         defer std.crypto.secureZero(u8, &exponent_buf);
         const exponent = blindedExponent(key.d[0..key.d_len], key.phi[0..key.phi_len], std.mem.readInt(u64, &blind, .little), &exponent_buf);
         const s = key.n.powWithEncodedExponent(m, exponent, .big) catch return error.SignatureFailed;
-        s.toBytes(out[0..k], .big) catch return error.SignatureFailed;
+        // Checked before it is written: a faulty signature, the one a fault
+        // attack wants, never reaches `out`.
         const check = key.n.powPublic(s, key.e) catch return error.SignatureFailed;
         if (!check.eql(m)) return error.SignatureFailed;
+        s.toBytes(out[0..k], .big) catch return error.SignatureFailed;
         return out[0..k];
     }
 };
