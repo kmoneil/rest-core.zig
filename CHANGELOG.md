@@ -25,6 +25,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   zeroes that header once the request is sent. std's own copy, in its
   pooled connection's write buffer, is out of reach; `wipe`'s doc says
   so (security catalog SECRET-05).
+- Fixed: `StreamCall.restart` was asked on every transport failure with
+  a writer sink, before the engine had decided to retry, so on a last
+  attempt, a failure not retried, or any `executeStreamBody` failure the
+  sink was emptied and the part of the body a resume counts on was lost.
+  It is asked only once a retry is decided.
 
 ## 0.2.1 (2026-11-06)
 
