@@ -43,6 +43,16 @@ Until 1.0, minor versions may break the API; each entry says how.
   boundary, and formatting a message from `d.message()` aliased the
   buffer it was writing (a panic in a safe build, undefined in
   ReleaseFast). It formats apart from the buffer, then cuts and copies.
+- `Engine` checks a cloud's hook when it binds it: each of the four
+  declarations `pub`, `RefusalError` a named set rather than `anyerror`
+  (which made every consumer's error set `anyerror`), and none of its
+  names but `OutOfMemory` one the transport or the token provider
+  returns too (a 408 called `TimedOut` was retried as the transport's).
+  A hook that breaks one fails to compile there, with a message saying
+  which, where it failed at a use site deep in the loop, or not at all.
+  `OutOfMemory` from `refusal` now ends the call, as it did from
+  `bodyDelayMs`; it went to `retryable` before. Breaks: a hook that broke
+  a rule. gcp.zig's and azure.zig's keep them.
 
 ## 0.2.1 (2026-11-06)
 

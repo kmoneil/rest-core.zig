@@ -423,6 +423,29 @@ test "retry: a call can widen what is retried, and sees the HTTP status it decid
     try testing.expectEqual(4, h.fake.requests.items.len);
 }
 
+test "retry: memory running out on a refused body ends the call, whatever retryable says" {
+    // As it does reading the delay the body asks for: the hook could not
+    // read the server's answer, which is no answer to retry on.
+    const Always = struct {
+        fn retryable(_: anyerror, _: u16) bool {
+            return true;
+        }
+    };
+    const OutOfMemory = struct {
+        fn refusal(_: Allocator, _: transport.Response, _: ?*Diagnostics) (GoogleShaped.RefusalError || Allocator.Error) {
+            return error.OutOfMemory;
+        }
+    };
+    var h: H = undefined;
+    h.init(&.{ unavailable, ok });
+    defer h.deinit();
+    var e = h.engine();
+    e.refusal = OutOfMemory.refusal;
+    try testing.expectError(error.OutOfMemory, e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things", .retryable = Always.retryable }));
+    try testing.expectEqual(1, h.fake.requests.items.len);
+    try testing.expectEqual(0, h.clock.sleep_count);
+}
+
 test "retry: a canceled attempt is returned, whatever retryable says" {
     // A cancel is the caller's, not the network's. Its request was spent
     // when Canceled came back, so a retry's sleep and send could not be

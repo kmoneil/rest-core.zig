@@ -11,12 +11,15 @@
 //! `Cloud` is a namespace that says what is the cloud's own:
 //!
 //! - `pub const RefusalError`: the errors a refused (non-2xx) response
-//!   maps to, such as gcp.zig's `NotFound` and `Unavailable`.
+//!   maps to, such as gcp.zig's `NotFound` and `Unavailable`. A named set,
+//!   with no name but `OutOfMemory` that the transport or the token
+//!   provider returns too, which the loop would take the refusal for.
 //! - `pub fn refusal(scratch: Allocator, res: transport.Response,
 //!   diagnostics: ?*Diagnostics) (RefusalError || Allocator.Error)`: reads
 //!   a refused response into `diagnostics` (`set`, then `setRequestId` when
 //!   the cloud names one) and returns its error, or `OutOfMemory` when
-//!   reading the body ran out. (Zig has no error union whose payload is an
+//!   reading the body ran out, which ends the call as `bodyDelayMs` running
+//!   out does. (Zig has no error union whose payload is an
 //!   error set, so the two are one set.) Google's body is JSON, or
 //!   XML from Cloud Storage's XML API; ARM's is JSON with `error.code`, and
 //!   Blob Storage's XML with the code in `x-ms-error-code`.
@@ -28,6 +31,9 @@
 //!   Allocator.Error!?u32`: a retry delay a refused response's body
 //!   carries, as Google's `google.rpc.RetryInfo`, or null. The loop waits
 //!   the larger of it and what the headers ask (`retry_after`).
+//!
+//! `Engine` checks these when it binds `Cloud`: a hook that breaks one
+//! fails to compile there, with a message that says which.
 //!
 //! Headers a cloud sends on every call, as gcp.zig's `x-goog-user-project`,
 //! go in the engine's `headers`.
@@ -161,6 +167,7 @@ pub const StreamBody = struct {
 };
 
 pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
+    comptime checkCloud(Cloud);
     return struct {
         gpa: Allocator,
         io: std.Io,
@@ -522,6 +529,10 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
                 return null;
             }
             const err = self.failure(scratch, res);
+            // The hook could not read the server's answer: the call's end,
+            // as when reading the delay its body asks for runs out, and no
+            // answer to retry on.
+            if (err == error.OutOfMemory) return error.OutOfMemory;
             return .{ .err = err, .http_status = res.status, .server_delay = try self.serverDelay(scratch, res) };
         }
 
@@ -764,6 +775,31 @@ fn requestBody(body: StreamCall.Body, streamed: ?StreamBody) transport.StreamReq
         .none => .none,
         .segments => |segments| .{ .segments = segments },
     };
+}
+
+/// Holds `Cloud` to the hook this file's doc describes where `Engine` binds
+/// it, rather than at a use site deep in the loop, or not at all.
+fn checkCloud(comptime Cloud: type) void {
+    const name = @typeName(Cloud);
+    for ([_][]const u8{ "RefusalError", "refusal", "retryable", "bodyDelayMs" }) |decl| {
+        if (!@hasDecl(Cloud, decl)) @compileError(name ++ " has no pub " ++ decl ++
+            ": a Cloud hook declares RefusalError, refusal, retryable and bodyDelayMs, each pub (see loop.zig's doc)");
+    }
+    const refusals = switch (@typeInfo(Cloud.RefusalError)) {
+        .error_set => |set| set.error_names orelse @compileError(name ++
+            ".RefusalError is anyerror, which would make every consumer's error set anyerror: name the refusals"),
+        else => @compileError(name ++ ".RefusalError is not an error set"),
+    };
+    // A refusal that shares a name with a failure below HTTP is taken for
+    // it: a 408's TimedOut retried as the transport's, a CANCELLED's
+    // Canceled as a cancel. OutOfMemory means the same either way.
+    const below = @typeInfo(transport.Error || TokenProvider.Error).error_set.error_names.?;
+    @setEvalBranchQuota(100 * (refusals.len + 1) * below.len);
+    for (refusals) |refusal| {
+        if (std.mem.eql(u8, refusal, "OutOfMemory")) continue;
+        for (below) |failure| if (std.mem.eql(u8, refusal, failure)) @compileError(name ++ ".RefusalError has " ++ refusal ++
+            ", which the transport or the token provider returns too, so the loop would take the refusal for that failure: give it a name of its own, as gcp.zig's ServerCancelled");
+    }
 }
 
 /// Whether a writer sink has taken back what a failed attempt delivered and
