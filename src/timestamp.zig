@@ -137,16 +137,17 @@ pub fn civilFromDays(days: i64) struct { year: i64, month: i64, day: i64 } {
 
 /// Writes `ts` as the server writes timestamps: in UTC with `Z`, and no
 /// fractional digits or 3, 6 or 9 of them, the fewest that hold it
-/// exactly. `ts` must be `inRange`.
+/// exactly. An instant past `min` or `max` is written as that end, so a
+/// far-future sentinel writes 9999-12-31.
 pub fn format(buf: *[max_len]u8, ts: std.Io.Timestamp) []const u8 {
-    std.debug.assert(inRange(ts));
-    const seconds: i64 = @intCast(@divFloor(ts.nanoseconds, std.time.ns_per_s));
-    const nanos: u32 = @intCast(@mod(ts.nanoseconds, std.time.ns_per_s));
+    const ns = std.math.clamp(ts.nanoseconds, min.nanoseconds, max.nanoseconds);
+    const seconds: i64 = @intCast(@divFloor(ns, std.time.ns_per_s));
+    const nanos: u32 = @intCast(@mod(ns, std.time.ns_per_s));
     const days = @divFloor(seconds, std.time.s_per_day);
     const secs_of_day = @mod(seconds, std.time.s_per_day);
     const date = civilFromDays(days);
     var w: std.Io.Writer = .fixed(buf);
-    // Fits: max_len is sized for the longest value the assert allows.
+    // Fits: max_len is sized for the longest value the clamp allows.
     w.print("{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}", .{
         @as(u64, @intCast(date.year)),
         @as(u64, @intCast(date.month)),
@@ -281,6 +282,17 @@ test "format writes the range's ends, the longest at max_len" {
     try testing.expectEqual(max_len, format(&buf, max).len);
     try testing.expectEqual(min, try parse("0001-01-01T00:00:00Z"));
     try testing.expectEqual(max, try parse("9999-12-31T23:59:59.999999999Z"));
+}
+
+test "format clamps an instant past the range to its end" {
+    // A caller's far-future sentinel crashed a release build: the assert
+    // was all that kept the text inside its buffer.
+    var buf: [max_len]u8 = undefined;
+    var want: [max_len]u8 = undefined;
+    try testing.expectEqualStrings(format(&want, max), format(&buf, .{ .nanoseconds = std.math.maxInt(i96) }));
+    try testing.expectEqualStrings(format(&want, max), format(&buf, .{ .nanoseconds = max.nanoseconds + 1 }));
+    try testing.expectEqualStrings(format(&want, min), format(&buf, .{ .nanoseconds = std.math.minInt(i96) }));
+    try testing.expectEqualStrings(format(&want, min), format(&buf, .{ .nanoseconds = min.nanoseconds - 1 }));
 }
 
 test "inRange takes min and max and nothing past them" {

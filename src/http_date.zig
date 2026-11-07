@@ -31,17 +31,18 @@ pub fn parse(text: []const u8) ParseError!std.Io.Timestamp {
 
 /// Writes `ts` as an IMF-fixdate, to the second: its fraction is dropped,
 /// so an instant is written as the second it falls in, before the epoch
-/// too. `ts` must be `timestamp.inRange`.
+/// too. An instant past `timestamp.min` or `timestamp.max` is written as
+/// that end.
 pub fn format(buf: *[len]u8, ts: std.Io.Timestamp) []const u8 {
-    std.debug.assert(timestamp.inRange(ts));
-    const seconds: i64 = @intCast(@divFloor(ts.nanoseconds, std.time.ns_per_s));
+    const ns = std.math.clamp(ts.nanoseconds, timestamp.min.nanoseconds, timestamp.max.nanoseconds);
+    const seconds: i64 = @intCast(@divFloor(ns, std.time.ns_per_s));
     const days = @divFloor(seconds, std.time.s_per_day);
     const secs_of_day = @mod(seconds, std.time.s_per_day);
     const date = timestamp.civilFromDays(days);
     // 1970-01-01 was a Thursday.
     const weekday: usize = @intCast(@mod(days + 3, 7));
     var w: std.Io.Writer = .fixed(buf);
-    // Fits: an in-range year has four digits, so the text is `len` long.
+    // Fits: a clamped year has four digits, so the text is `len` long.
     w.print("{s}, {d:0>2} {s} {d:0>4} {d:0>2}:{d:0>2}:{d:0>2} GMT", .{
         day_names[weekday],
         @as(u64, @intCast(date.day)),
@@ -220,6 +221,13 @@ fn dateProperty(_: void, input: []const u8) !void {
     const asc = std.fmt.bufPrint(&buf3, "{s} {s} {d: >2} {d:0>2}:{d:0>2}:{d:0>2} {d:0>4}", .{ day_names[weekday], months[@intCast(c.month - 1)], @as(u64, @intCast(c.day)), @as(u64, @intCast(hh)), @as(u64, @intCast(mm)), @as(u64, @intCast(ss)), @as(u64, @intCast(c.year)) }) catch unreachable;
     try testing.expectEqual(t, unixSeconds(asc).?);
     _ = unixSeconds(g.rest());
+}
+
+test "format clamps an instant past timestamp's range to its end" {
+    var buf: [len]u8 = undefined;
+    var want: [len]u8 = undefined;
+    try testing.expectEqualStrings(format(&want, timestamp.max), format(&buf, .{ .nanoseconds = std.math.maxInt(i96) }));
+    try testing.expectEqualStrings(format(&want, timestamp.min), format(&buf, .{ .nanoseconds = std.math.minInt(i96) }));
 }
 
 test "fuzz unixSeconds: any second from 1950 to 2049 reads back in all three formats" {
