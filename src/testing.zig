@@ -574,6 +574,8 @@ pub const FaultTransport = struct {
         const fired = loses and !std.meta.isError(outcome);
         const res: ?Response = outcome catch null;
         const result: TransportError!Response = if (fired) error.ConnectionResetByPeer else outcome;
+        // Fired before it is recorded, as in sendStream.
+        if (fired) self.fire(claimed.?);
         try self.remember(.{
             .method = req.method,
             .url = req.url,
@@ -584,7 +586,6 @@ pub const FaultTransport = struct {
             .err = if (result) |_| null else |err| err,
             .fault = if (fired) claimed else null,
         });
-        if (fired) self.fire(claimed.?);
         return result;
     }
 
@@ -604,15 +605,17 @@ pub const FaultTransport = struct {
         sent.head_out = if (losing) &head else req.head_out orelse &head;
         var cut_reader: CutReader = undefined;
         var cut_writer: CutWriter = undefined;
+        // Set by whichever cut fires.
+        var tripped = false;
         var discard_buf: [4096]u8 = undefined;
         var discarding: std.Io.Writer.Discarding = .init(&discard_buf);
         if (action) |a| switch (a) {
             .cut_request_body => |n| {
-                cut_reader = .init(req.body, n);
+                cut_reader = .init(req.body, n, &tripped);
                 sent.body = .{ .stream = .{ .reader = &cut_reader.interface, .len = body_len } };
             },
             .cut_response_body => |n| {
-                cut_writer = .init(req.sink.writer, n);
+                cut_writer = .init(req.sink.writer, n, &tripped);
                 sent.sink = .{ .writer = &cut_writer.writer };
             },
             .lose_response => if (req.sink == .writer) {
@@ -621,19 +624,19 @@ pub const FaultTransport = struct {
         };
 
         const outcome = self.inner.sendStream(sent, arena);
-        const fired = if (action) |a| switch (a) {
-            .cut_request_body => cut_reader.tripped,
-            .cut_response_body => cut_writer.tripped,
-            .lose_response => !std.meta.isError(outcome),
-        } else false;
+        // A cut fired when it tripped; a loss, when there was a response to
+        // lose.
+        const fired = tripped or (losing and !std.meta.isError(outcome));
         const result: StreamError!StreamResponse = if (fired) error.ConnectionResetByPeer else outcome;
-        if (!losing) {
-            if (req.head_out) |out| head = out.*;
-        } else if (!fired) if (req.head_out) |out| if (head) |h| {
-            // A loss planned and not carried out: the head was the caller's.
-            out.* = h;
-        };
+        // The head is the caller's, except one a loss carried out kept from
+        // it; a loss planned and not carried out hands it on.
+        if (req.head_out) |out| {
+            if (!losing) head = out.* else if (!fired) out.* = head;
+        }
 
+        // Fired before it is recorded: a record that runs out of memory
+        // still leaves the fault fired, as it took effect.
+        if (fired) self.fire(claimed.?);
         try self.remember(.{
             .method = req.method,
             .url = req.url,
@@ -644,7 +647,6 @@ pub const FaultTransport = struct {
             .err = if (result) |_| null else |err| err,
             .fault = if (fired) claimed else null,
         });
-        if (fired) self.fire(claimed.?);
         return result;
     }
 
@@ -734,13 +736,15 @@ pub const FaultTransport = struct {
         offset: usize = 0,
         /// Bytes still allowed out.
         left: u64,
-        tripped: bool = false,
+        /// Set when the cut fires.
+        tripped: *bool,
         interface: std.Io.Reader,
 
-        fn init(body: StreamRequest.Body, cut_after: u64) CutReader {
+        fn init(body: StreamRequest.Body, cut_after: u64, tripped: *bool) CutReader {
             return .{
                 .body = body,
                 .left = cut_after,
+                .tripped = tripped,
                 .interface = .{ .vtable = &.{ .stream = stream }, .buffer = &.{}, .seek = 0, .end = 0 },
             };
         }
@@ -748,7 +752,7 @@ pub const FaultTransport = struct {
         fn stream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
             const self: *CutReader = @alignCast(@fieldParentPtr("interface", r));
             if (self.left == 0) {
-                self.tripped = true;
+                self.tripped.* = true;
                 return error.ReadFailed;
             }
             const allowed = limit.min(.limited64(self.left));
@@ -779,13 +783,15 @@ pub const FaultTransport = struct {
     const CutWriter = struct {
         out: *std.Io.Writer,
         left: u64,
-        tripped: bool = false,
+        /// Set when the cut fires.
+        tripped: *bool,
         writer: std.Io.Writer,
 
-        fn init(out: *std.Io.Writer, cut_after: u64) CutWriter {
+        fn init(out: *std.Io.Writer, cut_after: u64, tripped: *bool) CutWriter {
             return .{
                 .out = out,
                 .left = cut_after,
+                .tripped = tripped,
                 .writer = .{ .buffer = &.{}, .vtable = &.{ .drain = drain } },
             };
         }
@@ -803,7 +809,7 @@ pub const FaultTransport = struct {
                     self.left -= n;
                     if (n < bytes.len) {
                         if (consumed > 0) return consumed;
-                        self.tripped = true;
+                        self.tripped.* = true;
                         return error.WriteFailed;
                     }
                 }
@@ -2348,6 +2354,27 @@ test "FakeTransport refuses what HttpTransport refuses, before it records or ans
     // A refused request is neither recorded nor answered from the script.
     try std.testing.expectEqual(answered, fake.requests.items.len);
     try std.testing.expectEqual(answered, fake.stream_requests.items.len);
+}
+
+test "FaultTransport: a fault that fired is marked so when its record runs out of memory" {
+    // It fires before it is recorded: the cut took effect, so the plan and
+    // the hook say so whatever happens to the record.
+    var fake: FakeTransport = .init(std.testing.allocator, &.{.{ .respond = .{ .body = "0123456789" } }});
+    defer fake.deinit();
+    var plan = [_]FaultTransport.Fault{.{ .method = .GET, .action = .{ .cut_response_body = 4 } }};
+    var faults: FaultTransport = .{ .inner = fake.transport(), .plan = &plan, .record = std.testing.failing_allocator };
+    defer faults.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var out_buf: [16]u8 = undefined;
+    var out: std.Io.Writer = .fixed(&out_buf);
+    try std.testing.expectError(error.OutOfMemory, faults.transport().sendStream(.{
+        .method = .GET,
+        .url = "http://x/v1/o",
+        .sink = .{ .writer = &out },
+    }, arena.allocator()));
+    try std.testing.expect(plan[0].fired);
+    try std.testing.expectEqualStrings("0123", out.buffered());
 }
 
 test "FaultTransport over HttpTransport: the server sees an upload stop partway" {
