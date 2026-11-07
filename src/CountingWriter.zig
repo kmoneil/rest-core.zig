@@ -1,4 +1,4 @@
-// From gcp.zig src/core/CountingWriter.zig at eae944c.
+// Ported from gcp.zig src/core/CountingWriter.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! A `std.Io.Writer` that counts the bytes passing through it to another
 //! writer. A streaming download wraps the caller's writer in one, so that
 //! when a connection drops mid-body the resume request knows which offset

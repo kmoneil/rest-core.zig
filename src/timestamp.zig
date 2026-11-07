@@ -1,4 +1,4 @@
-// From gcp.zig src/core/timestamp.zig at eae944c.
+// Ported from gcp.zig src/core/timestamp.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! RFC 3339 timestamps, as JSON APIs send them: proto3 JSON's
 //! `google.protobuf.Timestamp` (Pub/Sub's `publishTime`, Firestore's
 //! `timestampValue`) and the like. HTTP dates are in http_date.zig.

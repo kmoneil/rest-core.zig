@@ -1,4 +1,4 @@
-// From yaml.zig tools/security_catalog.zig at 9c5e924 (itself after ekur's, ekur t65); here a test that never runs is not covered (rest-core t52).
+// From yaml.zig tools/security_catalog.zig at 7cd3941 (itself after ekur's, ekur t65), which took back this copy's checks for a test that never runs (rest-core t52, yaml.zig t61).
 //! `security-catalog CATALOG.md DIR`: checks the security catalog against
 //! the tests, so the two cannot drift apart. After ekur's, less its
 //! compile-error fixtures.

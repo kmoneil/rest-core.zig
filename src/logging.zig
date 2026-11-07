@@ -1,4 +1,4 @@
-// From gcp.zig src/core/logging.zig at eae944c.
+// Ported from gcp.zig src/core/logging.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! Logging for the modules. Each logs through `std.log` under its own scope,
 //! such as `.gcp_pubsub` or `.azure_storage`, so applications can filter or silence each with
 //! `std_options.log_scope_levels`. Callers pass only methods, paths,

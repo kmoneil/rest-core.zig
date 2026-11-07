@@ -1,4 +1,4 @@
-// From gcp.zig src/core/rpc.zig at eae944c: its loop tests, run against two clouds' hooks, Google's and Azure ARM's, written here as tests.
+// Ported from gcp.zig src/core/rpc.zig at eae944c: its loop tests, run against two clouds' hooks, Google's and Azure ARM's, written here as tests. gcp.zig has built on this copy since its 5aa9ba8.
 //! The request loop's contract, driven through a fake transport, a fake
 //! clock and a fake token provider, under two clouds' hooks: one in Google's
 //! shape (a JSON `error.status`, `google.rpc.RetryInfo` in the body) and one

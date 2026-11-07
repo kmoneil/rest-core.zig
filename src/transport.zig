@@ -1,4 +1,4 @@
-// From gcp.zig src/core/transport.zig at eae944c.
+// Ported from gcp.zig src/core/transport.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! The HTTP seam. Every request goes through a `Transport`, so the standard
 //! library's HTTP churn stays in this file and tests can substitute a fake.
 //! `HttpTransport` is the `std.http.Client` implementation.

@@ -1,4 +1,4 @@
-// From gcp.zig src/core/rpc.zig at eae944c: its request loop and tests, made neutral. Google's error body, RetryInfo and quota project are gcp.zig's hook's.
+// Ported from gcp.zig src/core/rpc.zig at eae944c: its request loop and tests, made neutral. Google's error body, RetryInfo and quota project are gcp.zig's hook's. gcp.zig has built on this copy since its 5aa9ba8.
 //! One API call, from URL to body: attach credentials, send it through the
 //! transport, map a failure to an error, retry the transient ones with
 //! jittered backoff, and keep `Diagnostics` and the log current.
