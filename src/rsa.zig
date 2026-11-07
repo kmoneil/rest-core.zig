@@ -48,8 +48,10 @@ pub const ParseError = error{
 
 pub const SignError = error{
     /// The signature did not verify against the key's own public exponent:
-    /// the key is corrupt, or its parts do not belong together. Or, for
-    /// PSS, the salt does not fit beside the digest in the modulus.
+    /// the key is corrupt, or its parts do not belong together. Or the
+    /// call was not one to sign: a digest not `hash`'s length, an `out`
+    /// shorter than the key, or, for PSS, a salt that does not fit beside
+    /// the digest in the modulus.
     SignatureFailed,
 };
 
@@ -145,7 +147,7 @@ pub const PrivateKey = struct {
     /// Signs a digest made with `hash` with RSASSA-PKCS1-v1_5. Writes
     /// `key.len` bytes into `out` and returns them.
     pub fn signDigest(key: *const PrivateKey, io: std.Io, hash: Hash, digest: []const u8, out: []u8) SignError![]const u8 {
-        std.debug.assert(digest.len == hash.digestLength());
+        if (digest.len != hash.digestLength()) return error.SignatureFailed;
         var em_buf: [max_modulus_bytes]u8 = undefined;
         const em = encodePkcs1(hash, digest, em_buf[0..key.len]);
         return key.privateOp(io, em, out);
@@ -156,7 +158,7 @@ pub const PrivateKey = struct {
     /// as the digest for the scheme Cloud KMS uses. Writes `key.len` bytes
     /// into `out` and returns them.
     pub fn signPss(key: *const PrivateKey, io: std.Io, hash: Hash, digest: []const u8, salt: []const u8, out: []u8) SignError![]const u8 {
-        std.debug.assert(digest.len == hash.digestLength());
+        if (digest.len != hash.digestLength()) return error.SignatureFailed;
         const em_bits = key.n.bits() - 1;
         var em_buf: [max_modulus_bytes]u8 = undefined;
         const em = em_buf[0 .. (em_bits + 7) / 8];
@@ -183,7 +185,7 @@ pub const PrivateKey = struct {
     /// over many signatures to learn `d`.
     fn privateOp(key: *const PrivateKey, io: std.Io, em: []const u8, out: []u8) SignError![]const u8 {
         const k = key.len;
-        std.debug.assert(out.len >= k);
+        if (out.len < k) return error.SignatureFailed;
         // Every encoding starts with a zero byte or is a byte shorter than
         // the modulus, so it is always below it.
         const m = Fe.fromBytes(key.n, em, .big) catch return error.SignatureFailed;
@@ -908,6 +910,22 @@ test "rsa: the totient is (p - 1)(q - 1), and wipe zeroes it with d" {
     try testing.expect(std.mem.allEqual(u8, &key.d, 0));
     try testing.expect(std.mem.allEqual(u8, &key.phi, 0));
     try testing.expectEqual(0, key.d_len);
+}
+
+test "rsa: a digest of the wrong length, or an out too short, is SignatureFailed" {
+    // Asserts before: in ReleaseFast a message passed in place of its
+    // digest wrapped the encoding's offset and wrote past its buffer.
+    var key = try parsePem(test_key_2048);
+    defer key.deinit();
+    var out: [max_modulus_bytes]u8 = undefined;
+    const long: [200]u8 = @splat(1);
+    try testing.expectError(error.SignatureFailed, key.signDigest(testing.io, .sha256, &long, &out));
+    try testing.expectError(error.SignatureFailed, key.signDigest(testing.io, .sha256, long[0..31], &out));
+    const salt: [32]u8 = @splat(7);
+    try testing.expectError(error.SignatureFailed, key.signPss(testing.io, .sha256, &long, &salt, &out));
+    const digest: [32]u8 = @splat(2);
+    try testing.expectError(error.SignatureFailed, key.signDigest(testing.io, .sha256, &digest, out[0 .. key.len - 1]));
+    _ = try key.signDigest(testing.io, .sha256, &digest, out[0..key.len]);
 }
 
 test "rsa: signing is deterministic, and messages differ" {
