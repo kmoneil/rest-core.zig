@@ -412,13 +412,25 @@ fn verifyPssEncoding(comptime H: type, m_hash: []const u8, em: []const u8, em_bi
     return std.mem.eql(u8, &want, h);
 }
 
-/// Parses a PEM private key. `pem` may hold anything. Every buffer that
-/// held a secret on the way is wiped, a refused key's too. The key is
-/// returned by value, and Zig does not promise to build it in place: a
-/// copy of it, `d` with it, may be left in the stack the call used,
-/// which `deinit` cannot reach (seen in ReleaseFast). Keep a parsed key
-/// for the program's life rather than parsing one per use.
+/// Parses a PEM private key, as `parsePemInto` does, and returns it by
+/// value. Zig does not promise to build a returned value in place: a copy
+/// of the key, `d` with it, may be left in the stack the call used, which
+/// `deinit` cannot reach (seen in ReleaseFast). `parsePemInto` leaves none.
 pub fn parsePem(pem: []const u8) ParseError!PrivateKey {
+    var key: PrivateKey = undefined;
+    try parsePemInto(pem, &key);
+    return key;
+}
+
+/// Parses a PEM private key into `key`, a PKCS#8 `PRIVATE KEY` or a PKCS#1
+/// `RSA PRIVATE KEY`. `pem` may hold anything. The secret parts are
+/// written straight into `key`, never into a copy on the way, and every
+/// buffer that held one is wiped; on an error `key` holds nothing secret.
+/// `key.deinit()` wipes it when it is done with.
+pub fn parsePemInto(pem: []const u8, key: *PrivateKey) ParseError!void {
+    // A key that held another before this call holds nothing after a
+    // failed one.
+    errdefer key.wipe();
     if (std.mem.indexOf(u8, pem, "-----BEGIN ENCRYPTED PRIVATE KEY-----") != null) {
         return error.UnsupportedKey;
     }
@@ -435,7 +447,7 @@ pub fn parsePem(pem: []const u8) ParseError!PrivateKey {
         error.NoSpaceLeft => error.UnsupportedKey,
         else => error.InvalidPrivateKey,
     };
-    return parseDer(der_buf[0..len]);
+    return parseDer(der_buf[0..len], key);
 }
 
 /// The base64 between `-----BEGIN <label>-----` and `-----END <label>-----`.
@@ -481,7 +493,7 @@ fn magnitude(int: Element) ?[]const u8 {
 
 const rsa_oid = [_]u8{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01 };
 
-fn parseDer(bytes: []const u8) ParseError!PrivateKey {
+fn parseDer(bytes: []const u8, key: *PrivateKey) ParseError!void {
     var pos: usize = 0;
     const outer = readElement(bytes, &pos) orelse return error.InvalidPrivateKey;
     if (outer.tag != 0x30) return error.InvalidPrivateKey;
@@ -490,7 +502,7 @@ fn parseDer(bytes: []const u8) ParseError!PrivateKey {
     if (version.tag != 0x02) return error.InvalidPrivateKey;
     const second = readElement(outer.body, &p) orelse return error.InvalidPrivateKey;
     // A bare RSAPrivateKey starts INTEGER, INTEGER: hand the whole thing over.
-    if (second.tag == 0x02) return parsePkcs1(bytes);
+    if (second.tag == 0x02) return parsePkcs1(bytes, key);
     // PKCS#8: version 0, an AlgorithmIdentifier naming RSA, then the
     // RSAPrivateKey in an OCTET STRING.
     if (second.tag != 0x30) return error.InvalidPrivateKey;
@@ -501,13 +513,13 @@ fn parseDer(bytes: []const u8) ParseError!PrivateKey {
     if (!std.mem.eql(u8, oid.body, &rsa_oid)) return error.UnsupportedKey;
     const inner = readElement(outer.body, &p) orelse return error.InvalidPrivateKey;
     if (inner.tag != 0x04) return error.InvalidPrivateKey;
-    return parsePkcs1(inner.body);
+    return parsePkcs1(inner.body, key);
 }
 
 /// RFC 8017 A.1.2: SEQUENCE { version, n, e, d, p, q, dP, dQ, qInv }. Only
 /// n, e and d are used; signing with d alone is simpler than CRT and fast
 /// enough for a token an hour.
-fn parsePkcs1(bytes: []const u8) ParseError!PrivateKey {
+fn parsePkcs1(bytes: []const u8, key: *PrivateKey) ParseError!void {
     var pos: usize = 0;
     const seq = readElement(bytes, &pos) orelse return error.InvalidPrivateKey;
     if (seq.tag != 0x30) return error.InvalidPrivateKey;
@@ -525,7 +537,7 @@ fn parsePkcs1(bytes: []const u8) ParseError!PrivateKey {
 
     const n, const e = try privatePublic(n_bytes, e_bytes);
     if (d_bytes.len == 0 or d_bytes.len > max_modulus_bytes) return error.InvalidPrivateKey;
-    return keyOf(n, e, d_bytes, n_bytes, seq.body, &p);
+    return keyOf(n, e, d_bytes, n_bytes, seq.body, &p, key);
 }
 
 /// A private key's modulus and public exponent, held to what this code
@@ -542,14 +554,17 @@ fn privatePublic(n_bytes: []const u8, e_bytes: []const u8) ParseError!struct { M
     return .{ n, e };
 }
 
-/// The key from its parts, and the two primes that follow `d` in `body` at
-/// `pos`, which give the totient signing blinds its exponent with.
-fn keyOf(n: Modulus, e: Fe, d_bytes: []const u8, n_bytes: []const u8, body: []const u8, pos: *usize) ParseError!PrivateKey {
+/// The key from its parts, into `key`, and the two primes that follow `d`
+/// in `body` at `pos`, which give the totient signing blinds its exponent
+/// with.
+fn keyOf(n: Modulus, e: Fe, d_bytes: []const u8, n_bytes: []const u8, body: []const u8, pos: *usize, key: *PrivateKey) ParseError!void {
     const p_int = readElement(body, pos) orelse return error.InvalidPrivateKey;
     const q_int = readElement(body, pos) orelse return error.InvalidPrivateKey;
     const p_bytes = magnitude(p_int) orelse return error.InvalidPrivateKey;
     const q_bytes = magnitude(q_int) orelse return error.InvalidPrivateKey;
-    var key: PrivateKey = .{
+    // The secret parts go straight into the caller's key, never into a
+    // local that is copied out.
+    key.* = .{
         .n = n,
         .e = e,
         .d = @splat(0),
@@ -559,10 +574,9 @@ fn keyOf(n: Modulus, e: Fe, d_bytes: []const u8, n_bytes: []const u8, body: []co
         .len = (n.bits() + 7) / 8,
     };
     @memcpy(key.d[0..d_bytes.len], d_bytes);
-    // A key refused here leaves no `d` on the stack.
+    // A key refused here leaves no `d` behind.
     errdefer key.wipe();
     key.phi_len = (try totient(n_bytes, p_bytes, q_bytes, &key.phi)).len;
-    return key;
 }
 
 /// The longest blinded exponent: `d + k * phi` for a 64-bit `k`.
@@ -987,6 +1001,25 @@ fn withPart(index: usize, value: []const u8, der_buf: []u8, pem_buf: []u8) ![]co
     var b64_buf: [8192]u8 = undefined;
     const encoded = std.base64.standard.Encoder.encode(&b64_buf, w.buffered());
     return std.fmt.bufPrint(pem_buf, "-----BEGIN RSA PRIVATE KEY-----\n{s}\n-----END RSA PRIVATE KEY-----\n", .{encoded});
+}
+
+test "rsa: parsePemInto reads the key parsePem does, and a refused one leaves nothing secret" {
+    var by_value = try parsePem(test_key_2048);
+    defer by_value.deinit();
+    var into: PrivateKey = undefined;
+    try parsePemInto(test_key_2048, &into);
+    var a: [max_modulus_bytes]u8 = undefined;
+    var b: [max_modulus_bytes]u8 = undefined;
+    try testing.expectEqualSlices(u8, try by_value.sign(testing.io, test_message, &a), try into.sign(testing.io, test_message, &b));
+    // The same key refused, early or late: what it held is wiped.
+    var der: [4096]u8 = undefined;
+    var pem: [8192]u8 = undefined;
+    for ([_][]const u8{ "not a key", try withPart(4, &.{0x03}, &der, &pem) }) |bad| {
+        try parsePemInto(test_key_2048, &into);
+        try testing.expectError(error.InvalidPrivateKey, parsePemInto(bad, &into));
+        try testing.expect(std.mem.allEqual(u8, &into.d, 0));
+        try testing.expect(std.mem.allEqual(u8, &into.phi, 0));
+    }
 }
 
 test "rsa: a key too big to hold is UnsupportedKey, not InvalidPrivateKey" {

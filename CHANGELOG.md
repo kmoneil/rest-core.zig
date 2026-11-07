@@ -2,6 +2,14 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
+## Unreleased
+
+- `rsa.parsePemInto(pem, key: *PrivateKey)`: parses into the caller's
+  key, writing its secret parts straight there, never into a copy on the
+  way, and wipes it on any error. `parsePem`, which returns the key by
+  value, can leave a copy in the stack it used (seen in ReleaseFast);
+  it stays, and its doc points here (security catalog SECRET-04).
+
 ## 0.3.0 (2026-11-07)
 
 The fixes from an audit of the whole library (2026-11-06), each with a
