@@ -27,6 +27,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   sending endless chunks kept an untimed caller reading. The first needs
   one byte now, and the second stops past `max_response_bytes`, the body
   then `error.HttpProtocolError`.
+- `transport.findHeader(headers, name)`: the first header of a name, in
+  any case, which every `header()` here now uses. Their docs said the
+  first wins "as `std.http` does"; std keeps the last of Content-Type,
+  Location and Connection, so the docs say so now. Nothing reads
+  differently.
 
 ## 0.3.0 (2026-11-07)
 

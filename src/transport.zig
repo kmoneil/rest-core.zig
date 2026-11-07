@@ -62,6 +62,27 @@ pub fn checkRequest(url: []const u8, bearer: ?[]const u8, content_type: ?[]const
 /// One header, as `std.http` writes it.
 pub const Header = http.Header;
 
+/// The value of the first header named `name`, matched as HTTP matches
+/// names (without regard to case), or null. Where a name comes twice, the
+/// first wins. (std.http keeps the last of Content-Type, Location and
+/// Connection for the headers it reads itself, and refuses two Content-
+/// Lengths or Content-Encodings that differ.)
+pub fn findHeader(headers: []const Header, name: []const u8) ?[]const u8 {
+    for (headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
+    return null;
+}
+
+test "findHeader: the first of a name, in any case, or null" {
+    const headers: []const Header = &.{
+        .{ .name = "Content-Type", .value = "application/json" },
+        .{ .name = "x-ms-request-id", .value = "r-1" },
+        .{ .name = "content-type", .value = "text/plain" },
+    };
+    try std.testing.expectEqualStrings("application/json", findHeader(headers, "CONTENT-TYPE").?);
+    try std.testing.expectEqualStrings("r-1", findHeader(headers, "X-MS-Request-Id").?);
+    try std.testing.expectEqual(null, findHeader(headers, "location"));
+}
+
 /// RFC 9110 field names: at least one character, all of them token
 /// characters, so the name cannot carry a separator or end the line.
 pub fn isValidHeaderName(name: []const u8) bool {
@@ -109,11 +130,9 @@ pub const Response = struct {
     /// arena. A server that sends the same name twice appears twice.
     headers: []const Header = &.{},
 
-    /// The value sent for `name`, matched as HTTP matches names, or null.
-    /// The first wins, as `std.http` does for the headers it reads itself.
+    /// The value sent for `name`, as `findHeader` finds it.
     pub fn header(self: Response, name: []const u8) ?[]const u8 {
-        for (self.headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
-        return null;
+        return findHeader(self.headers, name);
     }
 };
 
@@ -155,11 +174,9 @@ pub const StreamRequest = struct {
         status: u16,
         headers: []const Header,
 
-        /// The value sent for `name`, matched as HTTP matches names, or
-        /// null. The first wins, as `std.http` does.
+        /// The value sent for `name`, as `findHeader` finds it.
         pub fn header(self: Head, name: []const u8) ?[]const u8 {
-            for (self.headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
-            return null;
+            return findHeader(self.headers, name);
         }
     };
 
@@ -217,11 +234,9 @@ pub const StreamResponse = struct {
     /// Bytes handed to the sink writer, buffered there or not.
     bytes_streamed: u64 = 0,
 
-    /// The value sent for `name`, matched as HTTP matches names, or null.
-    /// The first wins, as `std.http` does for the headers it reads itself.
+    /// The value sent for `name`, as `findHeader` finds it.
     pub fn header(self: StreamResponse, name: []const u8) ?[]const u8 {
-        for (self.headers) |h| if (std.ascii.eqlIgnoreCase(h.name, name)) return h.value;
-        return null;
+        return findHeader(self.headers, name);
     }
 };
 
