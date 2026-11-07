@@ -57,27 +57,38 @@ pub fn Scoped(comptime scope: @EnumLiteral()) type {
             // instantiation; naming the scope gives each scope its own buffer.
             const owner = scope;
             var buffer: [64 * 1024]u8 = undefined;
+            /// The bytes written, whole lines only: a line that does not
+            /// fit takes no room, so `text` never holds bytes not written.
             var len: usize = 0;
             /// Lines recorded since the last reset, including any that did not fit.
             pub var lines: usize = 0;
+            /// Lines that did not fit, so are not in `text`.
+            pub var dropped: usize = 0;
 
             fn record(comptime level: []const u8, comptime format: []const u8, args: anytype) void {
                 var line_buffer: [1024]u8 = undefined;
                 var w: std.Io.Writer = .fixed(&line_buffer);
                 w.print(level ++ ": " ++ format ++ "\n", args) catch {};
                 const line = w.buffered();
-                const at = @atomicRmw(usize, &len, .Add, line.len, .monotonic);
-                if (at + line.len <= buffer.len) @memcpy(buffer[at..][0..line.len], line);
                 _ = @atomicRmw(usize, &lines, .Add, 1, .monotonic);
+                var at = @atomicLoad(usize, &len, .monotonic);
+                while (at + line.len <= buffer.len) {
+                    at = @cmpxchgWeak(usize, &len, at, at + line.len, .monotonic, .monotonic) orelse {
+                        @memcpy(buffer[at..][0..line.len], line);
+                        return;
+                    };
+                }
+                _ = @atomicRmw(usize, &dropped, .Add, 1, .monotonic);
             }
 
             pub fn reset() void {
                 len = 0;
                 lines = 0;
+                dropped = 0;
             }
 
             pub fn text() []const u8 {
-                return buffer[0..@min(len, buffer.len)];
+                return buffer[0..len];
             }
         } else struct {};
     };
@@ -92,6 +103,20 @@ test "capture records formatted lines" {
     try std.testing.expectEqual(2, scoped.capture.lines);
     scoped.capture.reset();
     try std.testing.expectEqualStrings("", scoped.capture.text());
+}
+
+test "capture past its buffer keeps whole lines and nothing it never wrote" {
+    const scoped = Scoped(.rest_core_test_overflow);
+    scoped.capture.reset();
+    const long: [1000]u8 = @splat('x');
+    // 1008 bytes a line: 65 fit in 64 KiB, with 16 bytes over.
+    for (0..80) |_| scoped.debug("{s}", .{&long});
+    const text = scoped.capture.text();
+    try std.testing.expectEqual(65 * 1008, text.len);
+    var it = std.mem.splitScalar(u8, text[0 .. text.len - 1], '\n');
+    while (it.next()) |line| try std.testing.expectEqualStrings("debug: " ++ long, line);
+    try std.testing.expectEqual(80, scoped.capture.lines);
+    try std.testing.expectEqual(15, scoped.capture.dropped);
 }
 
 test "escaped: a server's text goes into a log line with its control bytes written out" {
