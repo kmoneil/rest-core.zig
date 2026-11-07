@@ -74,7 +74,8 @@ pub const Call = struct {
     retry: bool = true,
     /// Whether a failed attempt is worth another; null: the cloud's
     /// `retryable`. A call can widen it, as a publish does, or narrow it, as
-    /// `unsentOnly` does for a write that must not be repeated.
+    /// `unsentOnly` does for a write that must not be repeated. A canceled
+    /// attempt is never retried, whatever it says.
     retryable: ?RetryableFn = null,
     /// This call carries secrets. What the loop allocates for it, the URL
     /// and the bearer token, is wiped when the call returns, and a failed
@@ -537,7 +538,10 @@ pub fn Engine(comptime log_scope: @EnumLiteral(), comptime Cloud: type) type {
 
         /// What follows a failed attempt, logged when it is another.
         fn next(self: Self, a: *Attempts, failed: Failed) Next {
-            if (failed.last) return .stop;
+            // A cancel is the caller's, whatever `retryable` says of it. Its
+            // request was spent when Canceled came back, so neither a retry's
+            // sleep nor its send could be canceled again.
+            if (failed.last or failed.err == error.Canceled) return .stop;
             // A 401 usually means the token died between being fetched and
             // being used. The server refused the request before acting on
             // it, so trying again with a fresh token is safe even for a call

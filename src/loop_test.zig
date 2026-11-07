@@ -423,6 +423,24 @@ test "retry: a call can widen what is retried, and sees the HTTP status it decid
     try testing.expectEqual(4, h.fake.requests.items.len);
 }
 
+test "retry: a canceled attempt is returned, whatever retryable says" {
+    // A cancel is the caller's, not the network's. Its request was spent
+    // when Canceled came back, so a retry's sleep and send could not be
+    // canceled, and the canceler would wait them all out.
+    const Always = struct {
+        fn retryable(_: anyerror, _: u16) bool {
+            return true;
+        }
+    };
+    var h: H = undefined;
+    h.init(&.{ .{ .fail = error.Canceled }, ok });
+    defer h.deinit();
+    const e = h.engine();
+    try testing.expectError(error.Canceled, e.execute(&h.arena, .{ .method = .GET, .path = "/v1/things", .retryable = Always.retryable }));
+    try testing.expectEqual(1, h.fake.requests.items.len);
+    try testing.expectEqual(0, h.clock.sleep_count);
+}
+
 const too_many_wait_2: Reply = .{ .respond = .{
     .status = 429,
     .headers = &.{.{ .name = "Retry-After", .value = "2" }},

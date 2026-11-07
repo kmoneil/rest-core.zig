@@ -927,7 +927,11 @@ fn bodyError(
     if (encoding == .identity) return socketOk(connection);
     // The decoder failed. If the framing ends early too, the connection
     // dropped mid-body; if the framing is whole, the body itself is bad.
-    _ = transfer.discardRemaining() catch {};
+    _ = transfer.discardRemaining() catch {
+        // A socket error in the drain is the answer, a cancel among them:
+        // the framing's state would call it a dropped connection, retried.
+        if (connection.stream_reader.err) |err| return mapError(err, null);
+    };
     const framing_complete = if (dechunker) |d|
         d.done()
     else
@@ -3072,4 +3076,55 @@ test "HttpTransport returns error.Canceled when its task is canceled" {
     // Give the request time to reach the server, then cancel it.
     try io.sleep(.fromMilliseconds(100), .awake);
     try testing.expectError(error.Canceled, pending.cancel(io));
+}
+
+/// Sends an untimed GET whose gzip body is not gzip, with the server holding
+/// the framing open before its last chunk, and cancels the call while
+/// `bodyError` drains that framing. The cancel must come back as itself: as
+/// the dropped connection the drain's read fails with, it would be retried.
+fn expectCanceledInBodyDrain(sink: enum { buffer, writer }) !void {
+    const io = testing.io;
+    const head = "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n" ++
+        "20\r\n" ++ "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" ++ "\r\n";
+    var open: std.atomic.Value(bool) = .init(false);
+    var server: ScriptedServer = try .start(io, &.{head ++ "0\r\n\r\n"});
+    defer server.deinit(io);
+    server.pause = .{ .after = head.len, .open = &open };
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+
+    var ht: HttpTransport = .init(testing.allocator, io, "t");
+    defer ht.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var discarding: std.Io.Writer.Discarding = .init(&.{});
+    var buf: [128]u8 = undefined;
+    const req: StreamRequest = .{
+        .method = .GET,
+        .url = server.url(&buf, "/v1/o?alt=media"),
+        .accept_encoding = .compressed,
+        .sink = switch (sink) {
+            .buffer => .buffer,
+            .writer => .{ .writer = &discarding.writer },
+        },
+    };
+    const Call = struct {
+        fn run(t: Transport, r: StreamRequest, a: Allocator) StreamError!StreamResponse {
+            return t.sendStream(r, a);
+        }
+    };
+    var pending = try io.concurrent(Call.run, .{ ht.transport(), req, arena.allocator() });
+    // Time for the decoder to fail on the first chunk and the drain to wait.
+    try io.sleep(.fromMilliseconds(300), .awake);
+    const result = pending.cancel(io);
+    open.store(true, .release);
+    try testing.expectError(error.Canceled, result);
+}
+
+test "HttpTransport: a cancel while a bad gzip body's framing drains is Canceled, buffered" {
+    try expectCanceledInBodyDrain(.buffer);
+}
+
+test "HttpTransport: a cancel while a bad gzip body's framing drains is Canceled, to a writer" {
+    try expectCanceledInBodyDrain(.writer);
 }
