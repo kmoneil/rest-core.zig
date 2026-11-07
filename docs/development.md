@@ -42,7 +42,8 @@ rule gets a file there and a line in that list.
 request: `zig fmt --check` and the API docs; `zig build test` on Linux,
 macOS and Windows, which runs zigvet, gnarl, the security catalog and the
 docs check too; `zig build test-tls` on Linux, the TLS tests against
-`openssl s_server`; and `zig build test-release` on Linux. zigvet and gnarl
+`openssl s_server`, in Debug and in ReleaseFast; and `zig build
+test-release` on Linux, macOS and Windows. zigvet and gnarl
 come from `.github/actions/vet-tools`, each binary checked against a digest
 written there: zigvet's release is pinned in the action, gnarl's is
 `complexity.zon`'s `.gnarl`. To move to a new release, change the version,
