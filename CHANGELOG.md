@@ -59,6 +59,10 @@ Until 1.0, minor versions may break the API; each entry says how.
   wrapped the encoding's offset and wrote past its buffer. Each is
   `error.SignatureFailed` now, as the verify side already returned an
   error for the same mismatch.
+- Fixed: `timestamp.format` and `http_date.format` held their instant to
+  the years 1 to 9999 with an assert alone, so a caller's far-future
+  sentinel overflowed the fixed buffer into `unreachable` in ReleaseFast.
+  An instant past either end is written as that end now.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
