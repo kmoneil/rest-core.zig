@@ -17,6 +17,7 @@ const RetryPolicy = @import("retry.zig").RetryPolicy;
 const isRetryable = @import("retry.zig").isRetryable;
 const TokenProvider = @import("TokenProvider.zig");
 const transport = @import("transport.zig");
+const timestamp = @import("timestamp.zig");
 const test_util = @import("testing.zig");
 const FakeTransport = test_util.FakeTransport;
 const Reply = FakeTransport.Reply;
@@ -981,6 +982,251 @@ test "credential headers: none to an unauthenticated engine, none when turned of
     const emulator = try h.fake.request(1);
     try testing.expectEqual(null, emulator.header("x-goog-user-project"));
     try testing.expectEqual(null, emulator.bearer);
+}
+
+/// A signer shaped as Azure Storage's Shared Key: an x-ms-date from the
+/// attempt's clock and an Authorization made over it, recording what each
+/// attempt gave it.
+const DateSigner = struct {
+    count: usize = 0,
+    fail: ?loop.Signer.Error = null,
+    methods: [4]transport.Method = undefined,
+    urls: [4][64]u8 = undefined,
+    url_lens: [4]usize = @splat(0),
+    content_lengths: [4]?u64 = undefined,
+    content_types: [4]?[]const u8 = undefined,
+    body_lens: [4]?u64 = undefined,
+    x_ms_version: [4]bool = undefined,
+
+    fn signer(self: *DateSigner) loop.Signer {
+        return .{ .ptr = self, .sign = sign };
+    }
+
+    fn sign(ptr: *anyopaque, io: std.Io, scratch: Allocator, attempt: loop.Signable) loop.Signer.Error![]const transport.Header {
+        const self: *DateSigner = @ptrCast(@alignCast(ptr));
+        if (self.fail) |err| return err;
+        const i = self.count;
+        self.count += 1;
+        self.methods[i] = attempt.method;
+        @memcpy(self.urls[i][0..attempt.url.len], attempt.url);
+        self.url_lens[i] = attempt.url.len;
+        self.content_lengths[i] = attempt.content_length;
+        self.content_types[i] = attempt.content_type;
+        self.body_lens[i] = if (attempt.body) |pieces| total: {
+            var n: u64 = 0;
+            for (pieces) |piece| n += piece.len;
+            break :total n;
+        } else null;
+        self.x_ms_version[i] = transport.findHeader(attempt.headers, "x-ms-version") != null;
+        const now = std.Io.Clock.real.now(io);
+        const date = try scratch.print("{d}", .{now.nanoseconds});
+        const added = try scratch.alloc(transport.Header, 2);
+        added[0] = .{ .name = "x-ms-date", .value = date };
+        added[1] = .{ .name = "Authorization", .value = try scratch.print("SharedKey account:sig-{d}-{s}", .{ i, date }) };
+        return added;
+    }
+};
+
+test "signer: each attempt signed afresh, in place of the bearer token and of any header its name" {
+    var h: H = undefined;
+    h.init(&.{ unavailable, ok });
+    defer h.deinit();
+    // A token provider is set too: a signer stands in for it.
+    h.token.credential_headers = &.{.{ .name = "x-goog-user-project", .value = "p" }};
+    // The backoff's jitter at its top, so the retry's clock is later.
+    h.clock.random_byte = 0xff;
+    var signer: DateSigner = .{};
+    var e = h.engine();
+    e.signer = signer.signer();
+    e.headers = &.{.{ .name = "x-ms-version", .value = "2021-08-06" }};
+    _ = try e.execute(&h.arena, .{
+        .method = .PUT,
+        .path = "/c/blob",
+        .body = "hello",
+        // What a caller signing once per call sets today: replaced.
+        .headers = &.{ .{ .name = "x-ms-date", .value = "stale" }, .{ .name = "x-ms-blob-type", .value = "BlockBlob" } },
+    });
+    try testing.expectEqual(2, signer.count);
+    try testing.expectEqual(0, h.token.calls);
+    for (0..2) |i| {
+        const sent = try h.fake.request(i);
+        try testing.expectEqual(null, sent.bearer);
+        try testing.expectEqual(null, sent.header("x-goog-user-project"));
+        try testing.expectEqualStrings("BlockBlob", sent.header("x-ms-blob-type").?);
+        try testing.expect(std.mem.startsWith(u8, sent.header("authorization").?, "SharedKey account:"));
+        try testing.expect(!std.mem.eql(u8, sent.header("x-ms-date").?, "stale"));
+        try testing.expectEqual(.PUT, signer.methods[i]);
+        try testing.expectEqualStrings("https://service.example.com/c/blob", signer.urls[i][0..signer.url_lens[i]]);
+        try testing.expectEqual(5, signer.content_lengths[i].?);
+        try testing.expectEqualStrings("application/json", signer.content_types[i].?);
+        try testing.expectEqual(5, signer.body_lens[i].?);
+        try testing.expect(signer.x_ms_version[i]);
+    }
+    // The retry, after its backoff, carries a later date and its own signature.
+    const first = try h.fake.request(0);
+    const second = try h.fake.request(1);
+    try testing.expect(!std.mem.eql(u8, first.header("x-ms-date").?, second.header("x-ms-date").?));
+    try testing.expect(!std.mem.eql(u8, first.header("authorization").?, second.header("authorization").?));
+}
+
+test "signer: what a streaming attempt sends, a reader's body by its length alone" {
+    var h: H = undefined;
+    h.init(&.{ ok, ok });
+    defer h.deinit();
+    var signer: DateSigner = .{};
+    var e = h.engine();
+    e.signer = signer.signer();
+    // No body: no length.
+    _ = try e.executeStream(&h.arena, .{ .method = .GET, .path = "/c/blob" });
+    try testing.expectEqual(null, signer.content_lengths[0]);
+    try testing.expectEqual(0, signer.body_lens[0].?);
+    // A body from a reader: its length, and no bytes to hash.
+    var reader: std.Io.Reader = .fixed("payload");
+    _ = try e.executeStreamBody(&h.arena, .{ .method = .PUT, .path = "/c/blob", .content_type = "application/octet-stream" }, .{ .reader = &reader, .len = 7 });
+    try testing.expectEqual(7, signer.content_lengths[1].?);
+    try testing.expectEqual(null, signer.body_lens[1]);
+    try testing.expectEqualStrings("application/octet-stream", signer.content_types[1].?);
+    try testing.expectEqualStrings("SharedKey account:sig-1-", (try h.fake.streamRequest(1)).header("authorization").?[0.."SharedKey account:sig-1-".len]);
+}
+
+test "signer: never asked for an unauthenticated engine, and its failure is the call's" {
+    var h: H = undefined;
+    h.init(&.{ok});
+    defer h.deinit();
+    var signer: DateSigner = .{};
+    var e = h.engine();
+    e.signer = signer.signer();
+    e.unauthenticated = true;
+    _ = try e.execute(&h.arena, .{ .method = .GET, .path = "/c/blob" });
+    try testing.expectEqual(0, signer.count);
+    try testing.expectEqual(null, (try h.fake.request(0)).header("authorization"));
+
+    signer.fail = error.TokenUnavailable;
+    e.unauthenticated = false;
+    try testing.expectError(error.TokenUnavailable, e.execute(&h.arena, .{ .method = .GET, .path = "/c/blob" }));
+    try testing.expectEqual(1, h.fake.requests.items.len);
+    try testing.expect(std.mem.indexOf(u8, h.diag.message(), "the signer failed") != null);
+}
+
+/// AWS SigV4 for S3, as Amazon's worked examples sign (its documented
+/// example key, 2013-05-24), to show a `Signable` carries what SigV4 needs:
+/// the method, the URL's host, path and query, the headers and the payload.
+const SigV4 = struct {
+    const access_key_id = "AKIAIOSFODNN7EXAMPLE";
+    const secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+    const region = "us-east-1";
+    const Sha256 = std.crypto.hash.sha2.Sha256;
+    const Hmac = std.crypto.auth.hmac.sha2.HmacSha256;
+
+    fn signer() loop.Signer {
+        return .{ .ptr = undefined, .sign = sign };
+    }
+
+    fn sign(_: *anyopaque, io: std.Io, scratch: Allocator, attempt: loop.Signable) loop.Signer.Error![]const transport.Header {
+        // An allocating writer fails only for want of memory.
+        return build(io, scratch, attempt) catch |err| switch (err) {
+            error.WriteFailed, error.OutOfMemory => error.OutOfMemory,
+            error.InvalidUrl => error.TokenUnavailable,
+        };
+    }
+
+    fn build(io: std.Io, scratch: Allocator, attempt: loop.Signable) error{ WriteFailed, OutOfMemory, InvalidUrl }![]const transport.Header {
+        // 20130524T000000Z, from the attempt's clock.
+        var stamp_buf: [timestamp.max_len]u8 = undefined;
+        const iso = timestamp.format(&stamp_buf, std.Io.Clock.real.now(io));
+        const compact = try std.mem.replaceOwned(u8, scratch, try std.mem.replaceOwned(u8, scratch, iso[0..19], "-", ""), ":", "");
+        const date_time = try scratch.print("{s}Z", .{compact});
+        const date = date_time[0..8];
+
+        var payload: Sha256 = .init(.{});
+        for (attempt.body orelse &.{}) |piece| payload.update(piece);
+        const payload_hex = try scratch.dupe(u8, &std.fmt.bytesToHex(payload.finalResult(), .lower));
+
+        const uri = std.Uri.parse(attempt.url) catch return error.InvalidUrl;
+        const host = uri.host.?.percent_encoded;
+        const path = uri.path.percent_encoded;
+
+        // The headers signed: host, the attempt's own, and the two added.
+        var names: std.ArrayList([]const u8) = .empty;
+        var values: std.ArrayList([]const u8) = .empty;
+        try names.append(scratch, "host");
+        try values.append(scratch, host);
+        for (attempt.headers) |h| {
+            try names.append(scratch, try std.ascii.allocLowerString(scratch, h.name));
+            try values.append(scratch, std.mem.trim(u8, h.value, " "));
+        }
+        try names.appendSlice(scratch, &.{ "x-amz-content-sha256", "x-amz-date" });
+        try values.appendSlice(scratch, &.{ payload_hex, date_time });
+        const order = try scratch.alloc(usize, names.items.len);
+        for (order, 0..) |*o, i| o.* = i;
+        std.mem.sort(usize, order, names.items, struct {
+            fn lessThan(n: [][]const u8, a: usize, b: usize) bool {
+                return std.mem.lessThan(u8, n[a], n[b]);
+            }
+        }.lessThan);
+
+        var canonical: std.Io.Writer.Allocating = .init(scratch);
+        const w = &canonical.writer;
+        try w.print("{s}\n", .{@tagName(attempt.method)});
+        for (path) |c| {
+            if (std.ascii.isAlphanumeric(c) or std.mem.indexOfScalar(u8, "-_.~/", c) != null) try w.writeByte(c) else try w.print("%{X:0>2}", .{c});
+        }
+        try w.writeAll("\n\n");
+        for (order) |i| try w.print("{s}:{s}\n", .{ names.items[i], values.items[i] });
+        try w.writeByte('\n');
+        var signed_headers: std.Io.Writer.Allocating = .init(scratch);
+        for (order, 0..) |i, k| try signed_headers.writer.print("{s}{s}", .{ if (k > 0) ";" else "", names.items[i] });
+        try w.print("{s}\n{s}", .{ signed_headers.written(), payload_hex });
+
+        var canonical_hash: [Sha256.digest_length]u8 = undefined;
+        Sha256.hash(canonical.written(), &canonical_hash, .{});
+        const scope = try scratch.print("{s}/{s}/s3/aws4_request", .{ date, region });
+        const to_sign = try scratch.print("AWS4-HMAC-SHA256\n{s}\n{s}\n{s}", .{ date_time, scope, std.fmt.bytesToHex(canonical_hash, .lower) });
+
+        var key: [Hmac.mac_length]u8 = undefined;
+        Hmac.create(&key, date, "AWS4" ++ secret_access_key);
+        Hmac.create(&key, region, &key);
+        Hmac.create(&key, "s3", &key);
+        Hmac.create(&key, "aws4_request", &key);
+        var signature: [Hmac.mac_length]u8 = undefined;
+        Hmac.create(&signature, to_sign, &key);
+
+        const added = try scratch.alloc(transport.Header, 3);
+        added[0] = .{ .name = "x-amz-date", .value = date_time };
+        added[1] = .{ .name = "x-amz-content-sha256", .value = payload_hex };
+        added[2] = .{ .name = "Authorization", .value = try scratch.print("AWS4-HMAC-SHA256 Credential={s}/{s},SignedHeaders={s},Signature={s}", .{
+            access_key_id, scope, signed_headers.written(), std.fmt.bytesToHex(signature, .lower),
+        }) };
+        return added;
+    }
+};
+
+test "signer: SigV4 through the seam signs as Amazon's S3 examples do" {
+    var h: H = undefined;
+    h.init(&.{ ok, ok });
+    defer h.deinit();
+    // 2013-05-24T00:00:00Z, the examples' instant.
+    h.clock.now_ns = 1_369_353_600 * std.time.ns_per_s;
+    var e = h.engine();
+    e.base_url = "https://examplebucket.s3.amazonaws.com";
+    e.signer = SigV4.signer();
+    // Example 1: GET an object, with a Range.
+    _ = try e.executeStream(&h.arena, .{ .method = .GET, .path = "/test.txt", .headers = &.{.{ .name = "Range", .value = "bytes=0-9" }} });
+    try testing.expectEqualStrings(
+        "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=host;range;x-amz-content-sha256;x-amz-date,Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41",
+        (try h.fake.streamRequest(0)).header("authorization").?,
+    );
+    // Example 2: PUT an object, its path encoded and its payload hashed.
+    _ = try e.executeStream(&h.arena, .{
+        .method = .PUT,
+        .path = "/test$file.text",
+        .headers = &.{ .{ .name = "Date", .value = "Fri, 24 May 2013 00:00:00 GMT" }, .{ .name = "x-amz-storage-class", .value = "REDUCED_REDUNDANCY" } },
+        .body = .{ .segments = &.{"Welcome to Amazon S3."} },
+    });
+    try testing.expectEqualStrings(
+        "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request,SignedHeaders=date;host;x-amz-content-sha256;x-amz-date;x-amz-storage-class,Signature=98ad721746da40c64f1a55b78f14c238d841ea1380cd77a1b5971af0ece108bd",
+        (try h.fake.streamRequest(1)).header("authorization").?,
+    );
 }
 
 test "credential headers: the transport holds them to the rules any header meets" {

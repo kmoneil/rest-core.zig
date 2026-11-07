@@ -2,6 +2,18 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
+## Unreleased
+
+- `loop.Signer` and `Engine.signer`: an engine can sign each attempt in
+  place of a bearer token, as Azure Storage's Shared Key and AWS's SigV4
+  do, the loop calling the signer once an attempt's headers are final, on
+  every retry afresh. Its headers go in place of any of the same name. A
+  `loop.Signable` gives it the method, URL, headers, Content-Type,
+  Content-Length and, where the loop holds them, the body's bytes. A
+  caller that signed once per call (and held its retries inside the
+  signature's window) can sign each attempt instead. docs/essentials.md
+  has a section on it.
+
 ## 0.4.0 (2026-11-07)
 
 The rest of the audit of 2026-11-06: its p3 fixes and cleanups, a doc
