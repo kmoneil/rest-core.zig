@@ -146,8 +146,9 @@ pub const FakeTransport = struct {
 
     pub const Canned = struct {
         status: u16 = 200,
-        /// Never delivered for a HEAD request, as the real transport reads
-        /// no body for one, whatever its headers say.
+        /// Never delivered for a HEAD request, nor with a 1xx, 204 or 304,
+        /// as the real transport reads no body for them, whatever their
+        /// headers say.
         body: []const u8 = "{}",
         headers: []const Header = &.{},
         /// For a streamed sink: deliver only this many body bytes, then fail
@@ -260,12 +261,23 @@ pub const FakeTransport = struct {
         return switch (reply) {
             .fail => |err| err,
             // Copy into the arena, as the real transport does, so ownership bugs show up.
-            .respond => |canned| .{
+            .respond => |canned| if (endsAtHead(req.method, canned.status)) .{
                 .status = canned.status,
-                .body = if (req.method == .HEAD) "" else try arena.dupe(u8, canned.body),
+                .body = "",
+                .headers = try copyHeaders(arena, canned.headers),
+            } else if (canned.cut_after != null) canned.cut_error else .{
+                .status = canned.status,
+                .body = try arena.dupe(u8, canned.body),
                 .headers = try copyHeaders(arena, canned.headers),
             },
         };
+    }
+
+    /// Whether an answer ends at its head, as `HttpTransport` reads one:
+    /// a HEAD's, and a 1xx, 204 or 304, whatever its framing says (RFC
+    /// 9112 6.3). No body is delivered, buffered or to a sink.
+    fn endsAtHead(method: Method, status: u16) bool {
+        return method == .HEAD or status < 200 or status == 204 or status == 304;
     }
 
     fn sendStream(ptr: *anyopaque, req: StreamRequest, arena: Allocator) StreamError!StreamResponse {
@@ -290,8 +302,8 @@ pub const FakeTransport = struct {
             const headers = try copyHeaders(arena, canned.headers);
             out.* = .{ .status = canned.status, .headers = headers };
         }
-        // A HEAD's answer ends at its head: no body to deliver or cut.
-        if (req.method == .HEAD) return .{
+        // An answer that ends at its head has no body to deliver or cut.
+        if (endsAtHead(req.method, canned.status)) return .{
             .status = canned.status,
             .headers = try copyHeaders(arena, canned.headers),
         };
@@ -357,7 +369,9 @@ pub const FakeTransport = struct {
         errdefer self.gpa.free(url);
         const bearer = if (req.bearer) |b| try self.gpa.dupe(u8, b) else null;
         errdefer if (bearer) |b| self.gpa.free(b);
-        const body = if (req.body) |b| try self.gpa.dupe(u8, b) else null;
+        // GET, HEAD and DELETE go without a body, whatever the request holds.
+        const sent = if (req.sentContentType() != null) req.body else null;
+        const body = if (sent) |b| try self.gpa.dupe(u8, b) else null;
         errdefer if (body) |b| self.gpa.free(b);
         const headers = try dupeHeaders(self.gpa, req.headers);
         errdefer {
@@ -2068,6 +2082,86 @@ test "FaultTransport shows the head as the transport inside it does, and hides a
 }
 
 const HttpTransport = @import("transport.zig").HttpTransport;
+
+/// One answer as code under test sees it: the status, the buffered body,
+/// and what a writer sink was handed.
+const Answer = struct { status: u16, body: []const u8, sunk: usize };
+
+fn answerOf(t: Transport, url: []const u8, to_writer: bool, arena: Allocator) !Answer {
+    if (!to_writer) {
+        const res = try t.send(.{ .method = .GET, .url = url, .timeout_ms = 10_000 }, arena);
+        return .{ .status = res.status, .body = res.body, .sunk = 0 };
+    }
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const res = try t.sendStream(.{ .method = .GET, .url = url, .sink = .{ .writer = &w }, .timeout_ms = 10_000 }, arena);
+    return .{ .status = res.status, .body = res.body, .sunk = w.buffered().len };
+}
+
+test "FakeTransport ends a 204, 304 or 1xx at its head, as HttpTransport does" {
+    // Code that parsed a 204's body passed on the fake's "{}" and met an
+    // empty body in production. Each status, buffered and to a writer,
+    // through both: the same status, no body, nothing to the sink.
+    const io = std.testing.io;
+    const heads = [_]struct { u16, []const u8 }{
+        .{ 204, "HTTP/1.1 204 No Content\r\n\r\n" },
+        // A 304's length is the representation's, not a body's.
+        .{ 304, "HTTP/1.1 304 Not Modified\r\nContent-Length: 2\r\n\r\n" },
+        // Not 100: std reads on past a 100 Continue for the head after it.
+        .{ 103, "HTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\n" },
+    };
+    for (heads) |head| for ([_]bool{ false, true }) |to_writer| {
+        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+        defer arena.deinit();
+        var server: ScriptedServer = try .start(io, &.{head[1]});
+        defer server.deinit(io);
+        var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+        defer _ = serving.cancel(io) catch {};
+        var http: HttpTransport = .init(std.testing.allocator, io, "t");
+        defer http.deinit();
+        var url_buf: [64]u8 = undefined;
+        const real = try answerOf(http.transport(), server.url(&url_buf, "/v1/a"), to_writer, arena.allocator());
+
+        var fake: FakeTransport = .init(std.testing.allocator, &.{.{ .respond = .{ .status = head[0] } }});
+        defer fake.deinit();
+        const faked = try answerOf(fake.transport(), "http://x/v1/a", to_writer, arena.allocator());
+        try std.testing.expectEqual(head[0], real.status);
+        try std.testing.expectEqual(real.status, faked.status);
+        try std.testing.expectEqualStrings(real.body, faked.body);
+        try std.testing.expectEqual(real.sunk, faked.sunk);
+    };
+}
+
+test "FakeTransport records no body for a GET, HEAD or DELETE, as none is sent" {
+    const io = std.testing.io;
+    var server: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"});
+    defer server.deinit(io);
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var http: HttpTransport = .init(std.testing.allocator, io, "t");
+    defer http.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var url_buf: [64]u8 = undefined;
+    _ = try http.transport().send(.{ .method = .DELETE, .url = server.url(&url_buf, "/v1/a"), .body = "x", .timeout_ms = 10_000 }, arena.allocator());
+    try serving.await(io);
+    try std.testing.expectEqual(0, server.seen_body_len[0]);
+
+    var fake: FakeTransport = .init(std.testing.allocator, &.{ .{ .respond = .{} }, .{ .respond = .{} }, .{ .respond = .{} } });
+    defer fake.deinit();
+    for ([_]Method{ .GET, .HEAD, .DELETE }) |method| {
+        _ = try fake.transport().send(.{ .method = method, .url = "http://x/v1/a", .body = "x" }, arena.allocator());
+    }
+    for (0..3) |i| try std.testing.expectEqual(null, (try fake.request(i)).body);
+}
+
+test "FakeTransport: a buffered reply cut short fails, as its doc says" {
+    var fake: FakeTransport = .init(std.testing.allocator, &.{.{ .respond = .{ .body = "0123456789", .cut_after = 2 } }});
+    defer fake.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.ConnectionResetByPeer, fake.transport().send(.{ .method = .GET, .url = "http://x/v1/a" }, arena.allocator()));
+}
 
 test "FakeTransport refuses what HttpTransport refuses, before it records or answers" {
     // A fake that takes what production refuses passes a test the code

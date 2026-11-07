@@ -18,6 +18,14 @@ Until 1.0, minor versions may break the API; each entry says how.
   after the code stopped sleeping; it panics now. A deadline already
   past moved the clock back and recorded a negative sleep; it returns at
   once and records none, as a real `Io` does.
+- Fixed: `testing.FakeTransport` answered unlike `HttpTransport` in three
+  ways. A 204, 304 or 1xx came back with the canned body (`"{}"` by
+  default) and streamed it into a writer sink; such an answer ends at
+  its head, so no body now, buffered or to a sink. A GET, HEAD or DELETE
+  was recorded with the body it held, which is never sent; it is
+  recorded with none. And `send` ignored `cut_after`, though `Canned`
+  says a buffered reply cut short fails; it returns `cut_error` now.
+  Breaks: a test that read a 204's or 304's body from the fake.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had
