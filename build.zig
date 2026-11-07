@@ -204,6 +204,16 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addFmt(.{ .paths = fmt_paths, .check = true }).step);
     b.step("fmt", "Format the Zig in build.zig, build.zig.zon, src/, test/, tools/ and examples/").dependOn(&b.addFmt(.{ .paths = fmt_paths }).step);
 
+    // `zig build bench`: what two per-response costs in the transport come
+    // to, built ReleaseFast and run here (tools/bench.zig, t70). Not part of
+    // `test`: its figures are read, not checked.
+    const bench = b.addExecutable(.{ .name = "bench", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/bench.zig"),
+        .target = target,
+        .optimize = .fast,
+    }) });
+    b.step("bench", "Measure two per-response costs in the transport, ReleaseFast").dependOn(&b.addRunArtifact(bench).step);
+
     // The API reference, from the doc comments: zig-out/docs/index.html.
     const lib = b.addLibrary(.{ .name = "rest_core", .root_module = mod });
     const docs = b.addInstallDirectory(.{ .source_dir = lib.getEmittedDocs(), .install_dir = .prefix, .install_subdir = "docs" });

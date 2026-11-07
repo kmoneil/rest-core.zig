@@ -49,6 +49,11 @@ Until 1.0, minor versions may break the API; each entry says how.
   what it hands out, and every public declaration has a doc comment.
   `TokenProvider` says a provider shared by several clients must be
   thread-safe; `ScriptedServer` says how to start, run and stop it.
+- Faster: a compressed body is hashed only with its trailer's own
+  checksum (CRC-32 for gzip, Adler-32 for deflate), not both, about
+  250 us less per MiB of gzip and 1.7 ms per MiB of deflate; and a
+  response's headers are one copy of its head, not one per name and
+  value. `zig build bench` measures both.
 
 ## 0.3.0 (2026-11-07)
 

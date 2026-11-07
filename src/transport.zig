@@ -595,7 +595,7 @@ pub const HttpTransport = struct {
             .encoding = encoding,
             .max_drain = self.max_response_bytes,
         };
-        var check: TrailerCheck = .{};
+        var check: TrailerCheck = .of(encoding);
         const read: ReadBody = if (to_writer) |w|
             .{ .streamed = try streamBody(reader, w, &check, source) }
         else
@@ -678,15 +678,15 @@ pub const HttpTransport = struct {
         if (length and encoding) return error.HttpProtocolError;
     }
 
-    /// Every header of `head`, copied into `arena`. std.http bounds the head
-    /// by the connection's read buffer, so this copy is bounded too.
+    /// Every header of `head`, in `arena`: one copy of the head, the names
+    /// and values sliced from it (about 160 ns less per response than a
+    /// copy of each, by `zig build bench`). std.http bounds the head by the
+    /// connection's read buffer, so this copy is bounded too.
     fn collectHeaders(head: http.Client.Response.Head, arena: Allocator) Allocator.Error![]const Header {
+        const copy = try arena.dupe(u8, head.bytes);
         var headers: std.ArrayList(Header) = .empty;
-        var it = head.iterateHeaders();
-        while (it.next()) |h| try headers.append(arena, .{
-            .name = try arena.dupe(u8, h.name),
-            .value = try arena.dupe(u8, h.value),
-        });
+        var it: http.HeaderIterator = .init(copy);
+        while (it.next()) |h| try headers.append(arena, h);
         return headers.items;
     }
 };
@@ -877,14 +877,31 @@ fn finishFraming(source: BodySource, content_length: ?u64) Error!void {
 /// the trailer std's decoder reads and never checks: gzip's CRC-32 and
 /// length (mod 2^32), zlib's Adler-32. A body that does not match its own
 /// trailer is a bad body, `error.HttpProtocolError`, whatever it decoded to.
+/// Only the container's own hash is computed: hashing a gzip body with
+/// Adler-32 too cost about 250 us a MiB, and a zlib body with CRC-32 too
+/// about 1.7 ms, more than the decode (`zig build bench`).
 const TrailerCheck = struct {
+    container: flate.Container,
     crc: std.hash.Crc32 = .init(),
     adler: std.hash.Adler32 = .{},
     count: u64 = 0,
 
+    /// The check for a body in `encoding`: gzip's trailer holds a CRC-32,
+    /// deflate's (a zlib stream) an Adler-32, and any other body none.
+    fn of(encoding: http.ContentEncoding) TrailerCheck {
+        return .{ .container = switch (encoding) {
+            .gzip => .gzip,
+            .deflate => .zlib,
+            else => .raw,
+        } };
+    }
+
     fn update(c: *TrailerCheck, bytes: []const u8) void {
-        c.crc.update(bytes);
-        c.adler.update(bytes);
+        switch (c.container) {
+            .gzip => c.crc.update(bytes),
+            .zlib => c.adler.update(bytes),
+            .raw => {},
+        }
         c.count += bytes.len;
     }
 
