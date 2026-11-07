@@ -20,6 +20,7 @@ const StreamResponse = @import("transport.zig").StreamResponse;
 const StreamError = @import("transport.zig").StreamError;
 const ContentType = @import("transport.zig").ContentType;
 const Header = @import("transport.zig").Header;
+const checkRequest = @import("transport.zig").checkRequest;
 const TokenProvider = @import("TokenProvider.zig");
 
 /// A `TokenProvider` that returns one token, or fails with one error, and
@@ -124,6 +125,9 @@ test "FakeClock: cancel protection is kept, and a blocked sleep is not canceled"
 }
 
 /// A `Transport` that records every request and answers from a script.
+/// What `HttpTransport` refuses before it connects (`transport.checkRequest`)
+/// is refused here too, unrecorded and with the script where it was, so a
+/// test never passes a request production would not send.
 pub const FakeTransport = struct {
     gpa: Allocator,
     script: []const Reply,
@@ -244,6 +248,9 @@ pub const FakeTransport = struct {
 
     fn send(ptr: *anyopaque, req: Request, arena: Allocator) TransportError!Response {
         const self: *FakeTransport = @ptrCast(@alignCast(ptr));
+        // What HttpTransport refuses before it connects is refused here
+        // too, unrecorded and with the script where it was.
+        try checkRequest(req.url, req.bearer, req.sentContentType(), req.headers);
         try self.record(req);
         // A script that runs out means the code under test sent more requests
         // than the test expected; the request count assertions catch it.
@@ -263,6 +270,7 @@ pub const FakeTransport = struct {
 
     fn sendStream(ptr: *anyopaque, req: StreamRequest, arena: Allocator) StreamError!StreamResponse {
         const self: *FakeTransport = @ptrCast(@alignCast(ptr));
+        try checkRequest(req.url, req.bearer, req.content_type, req.headers);
         // The body is drained even when the script has run out, as the real
         // transport writes it before it can read any response.
         try self.recordStream(req);
@@ -2044,6 +2052,97 @@ test "FaultTransport shows the head as the transport inside it does, and hides a
 }
 
 const HttpTransport = @import("transport.zig").HttpTransport;
+
+test "FakeTransport refuses what HttpTransport refuses, before it records or answers" {
+    // A fake that takes what production refuses passes a test the code
+    // would fail in production. Each row goes through both transports, on
+    // both entries, and must come back the same: the error, or the 200.
+    const Row = struct {
+        url: []const u8,
+        method: Method = .GET,
+        body: ?[]const u8 = null,
+        bearer: ?[]const u8 = null,
+        headers: []const Header = &.{},
+        refused: ?TransportError = null,
+    };
+    const local = "http://127.0.0.1:PORT/v1/a";
+    const rows = [_]Row{
+        .{ .url = local },
+        .{ .url = "http://127.0.0.1:PORT/v1/a b", .refused = error.InvalidEndpoint },
+        .{ .url = "http://127.0.0.1:PORT/v1/a\r\nX-Injected: y", .refused = error.InvalidEndpoint },
+        .{ .url = "http://127.0.0.1:PORT/v1\\a", .refused = error.InvalidEndpoint },
+        .{ .url = "http://user:pw@127.0.0.1:PORT/v1/a", .refused = error.InvalidEndpoint },
+        .{ .url = "http://%31%32%37.0.0.1:PORT/v1/a", .refused = error.InvalidEndpoint },
+        .{ .url = "ftp://127.0.0.1:PORT/v1/a", .refused = error.InvalidEndpoint },
+        .{ .url = local, .headers = &.{.{ .name = "Content-Length", .value = "5" }}, .refused = error.InvalidRequestHeader },
+        .{ .url = local, .headers = &.{.{ .name = "Host", .value = "evil.example" }}, .refused = error.InvalidRequestHeader },
+        .{ .url = local, .headers = &.{.{ .name = "Accept-Encoding", .value = "gzip" }}, .refused = error.InvalidRequestHeader },
+        .{ .url = local, .headers = &.{.{ .name = "Connection", .value = "close" }}, .refused = error.InvalidRequestHeader },
+        .{ .url = local, .headers = &.{.{ .name = "X-A", .value = "a\r\nX-Evil: 1" }}, .refused = error.InvalidRequestHeader },
+        .{ .url = local, .bearer = "tok en\r\nX-Evil: 1", .refused = error.InvalidRequestHeader },
+        .{ .url = local, .bearer = "tok", .headers = &.{.{ .name = "Authorization", .value = "Bearer other" }}, .refused = error.InvalidRequestHeader },
+        // An Authorization of the caller's own scheme, with no bearer, goes.
+        .{ .url = local, .headers = &.{.{ .name = "Authorization", .value = "SharedKey a:b" }} },
+        .{ .url = local, .method = .POST, .body = "{}", .headers = &.{.{ .name = "Content-Type", .value = "text/plain" }}, .refused = error.InvalidRequestHeader },
+        // A GET carries no Content-Type of its own, so a caller's goes.
+        .{ .url = local, .headers = &.{.{ .name = "Content-Type", .value = "text/plain" }} },
+    };
+    comptime var answered = 0;
+    inline for (rows) |row| answered += @intFromBool(row.refused == null);
+
+    const io = std.testing.io;
+    const replies: [2 * answered][]const u8 = @splat("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}");
+    var server: ScriptedServer = try .start(io, &replies);
+    defer server.deinit(io);
+    server.per_connection = 2 * answered;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    var http: HttpTransport = .init(std.testing.allocator, io, "t");
+    defer http.deinit();
+    const script: [2 * answered]FakeTransport.Reply = @splat(.{ .respond = .{} });
+    var fake: FakeTransport = .init(std.testing.allocator, &script);
+    defer fake.deinit();
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+
+    var port_buf: [8]u8 = undefined;
+    const port = try std.fmt.bufPrint(&port_buf, "{d}", .{server.port});
+    for (rows) |row| {
+        const url = try std.mem.replaceOwned(u8, arena.allocator(), row.url, "PORT", port);
+        const req: Request = .{
+            .method = row.method,
+            .url = url,
+            .body = row.body,
+            .bearer = row.bearer,
+            .headers = row.headers,
+            .timeout_ms = 10_000,
+        };
+        const segments = [_][]const u8{row.body orelse ""};
+        const stream_req: StreamRequest = .{
+            .method = row.method,
+            .url = url,
+            .bearer = row.bearer,
+            .content_type = req.sentContentType(),
+            .headers = row.headers,
+            .body = if (row.body != null) .{ .segments = &segments } else .none,
+            .timeout_ms = 10_000,
+        };
+        for ([_]Transport{ http.transport(), fake.transport() }) |t| {
+            if (row.refused) |err| {
+                try std.testing.expectError(err, t.send(req, arena.allocator()));
+                try std.testing.expectError(err, t.sendStream(stream_req, arena.allocator()));
+            } else {
+                try std.testing.expectEqual(200, (try t.send(req, arena.allocator())).status);
+                try std.testing.expectEqual(200, (try t.sendStream(stream_req, arena.allocator())).status);
+            }
+        }
+    }
+    try serving.await(io);
+    try std.testing.expectEqual(2 * answered, server.seen_count);
+    // A refused request is neither recorded nor answered from the script.
+    try std.testing.expectEqual(answered, fake.requests.items.len);
+    try std.testing.expectEqual(answered, fake.stream_requests.items.len);
+}
 
 test "FaultTransport over HttpTransport: the server sees an upload stop partway" {
     const io = std.testing.io;

@@ -36,7 +36,28 @@ pub const Request = struct {
     /// task to run the timer; where the `Io` cannot start one, the request
     /// is `error.ConcurrencyUnavailable`, never sent untimed.
     timeout_ms: u32 = 0,
+
+    /// The Content-Type it goes with: `content_type`'s for a method that
+    /// carries a body, none for GET, HEAD and DELETE.
+    pub fn sentContentType(req: Request) ?[]const u8 {
+        return switch (req.method) {
+            .GET, .HEAD, .DELETE => null,
+            .PUT, .POST, .PATCH => req.content_type.mediaType(),
+        };
+    }
 };
+
+/// Refuses, as `HttpTransport` does before it connects, a request it would
+/// not send: a URL that would go out other than as written
+/// (`error.InvalidEndpoint`), and a header HTTP cannot carry or the
+/// transport writes itself (`error.InvalidRequestHeader`). `content_type`
+/// is the one the request carries, or null: a `Request`'s is
+/// `sentContentType`. For a `Transport` of one's own, and a fake, so that
+/// what production refuses never passes in a test.
+pub fn checkRequest(url: []const u8, bearer: ?[]const u8, content_type: ?[]const u8, headers: []const Header) Error!void {
+    _ = try HttpTransport.target(url);
+    try HttpTransport.checkHeaders(bearer, content_type, headers);
+}
 
 /// One header, as `std.http` writes it.
 pub const Header = http.Header;
@@ -306,18 +327,15 @@ pub const HttpTransport = struct {
     /// response buffered, so both entries share one implementation.
     fn send(ptr: *anyopaque, req: Request, arena: Allocator) Error!Response {
         const self: *HttpTransport = @ptrCast(@alignCast(ptr));
-        const has_body = switch (req.method) {
-            .GET, .HEAD, .DELETE => false,
-            .PUT, .POST, .PATCH => true,
-        };
+        const content_type = req.sentContentType();
         const segments = [_][]const u8{req.body orelse ""};
         const res = self.sendStreamNow(.{
             .method = req.method,
             .url = req.url,
             .bearer = req.bearer,
-            .content_type = if (has_body) req.content_type.mediaType() else null,
+            .content_type = content_type,
             .headers = req.headers,
-            .body = if (has_body) .{ .segments = &segments } else .none,
+            .body = if (content_type != null) .{ .segments = &segments } else .none,
             .sink = .buffer,
             .accept_encoding = .compressed,
             .timeout_ms = req.timeout_ms,
@@ -364,9 +382,8 @@ pub const HttpTransport = struct {
     }
 
     fn sendNow(self: *HttpTransport, req: StreamRequest, arena: Allocator) StreamError!StreamResponse {
-        const uri = std.Uri.parse(req.url) catch return error.InvalidEndpoint;
-        try checkUrl(req.url, uri);
-        const protocol = http.Client.Protocol.fromUri(uri) orelse return error.InvalidEndpoint;
+        const uri, const protocol = try target(req.url);
+        try checkHeaders(req.bearer, req.content_type, req.headers);
         if (protocol == .tls) self.expireTlsClock(.when_stale);
         return self.exchange(uri, protocol, req, arena) catch |err| {
             // A handshake can fail on a stale clock or CA bundle; the next
@@ -397,7 +414,6 @@ pub const HttpTransport = struct {
         req: StreamRequest,
         arena: Allocator,
     ) StreamError!StreamResponse {
-        try checkRequestHeaders(req);
         const authorization: ?[]u8 = if (req.bearer) |token|
             try arena.print("Bearer {s}", .{token})
         else
@@ -558,6 +574,14 @@ pub const HttpTransport = struct {
     /// silently drops), and a percent-encoded host, which std sends in Host
     /// as written. A URL comes from the program, but parts of it often come
     /// from input; `query` encodes them.
+    /// `url` parsed and checked, with the protocol it is sent over.
+    fn target(url: []const u8) Error!struct { std.Uri, http.Client.Protocol } {
+        const uri = std.Uri.parse(url) catch return error.InvalidEndpoint;
+        try checkUrl(url, uri);
+        const protocol = http.Client.Protocol.fromUri(uri) orelse return error.InvalidEndpoint;
+        return .{ uri, protocol };
+    }
+
     fn checkUrl(text: []const u8, uri: std.Uri) Error!void {
         for (text) |c| if (c <= ' ' or c == 0x7f or c == '\\') return error.InvalidEndpoint;
         if (uri.user != null or uri.password != null) return error.InvalidEndpoint;
@@ -575,19 +599,19 @@ pub const HttpTransport = struct {
     /// second Content-Type beside `content_type`. With two, a server or a
     /// proxy before it picks one, and two lengths is request smuggling
     /// (CWE-444).
-    fn checkRequestHeaders(req: StreamRequest) Error!void {
-        if (req.bearer) |token| if (!isValidBearerToken(token)) return error.InvalidRequestHeader;
-        for (req.headers) |h| if (!isAllowedHeader(h, req)) return error.InvalidRequestHeader;
-        if (req.content_type) |ct| if (!isValidHeaderValue(ct)) return error.InvalidRequestHeader;
+    fn checkHeaders(bearer: ?[]const u8, content_type: ?[]const u8, headers: []const Header) Error!void {
+        if (bearer) |token| if (!isValidBearerToken(token)) return error.InvalidRequestHeader;
+        for (headers) |h| if (!isAllowedHeader(h, bearer != null, content_type != null)) return error.InvalidRequestHeader;
+        if (content_type) |ct| if (!isValidHeaderValue(ct)) return error.InvalidRequestHeader;
     }
 
-    /// Whether `h` goes out as `req` asks: a name and value HTTP can carry,
-    /// and not a header the transport writes itself.
-    fn isAllowedHeader(h: Header, req: StreamRequest) bool {
+    /// Whether `h` goes out as asked: a name and value HTTP can carry, and
+    /// not a header the transport writes itself.
+    fn isAllowedHeader(h: Header, has_bearer: bool, has_content_type: bool) bool {
         if (!isValidHeaderName(h.name) or !isValidHeaderValue(h.value)) return false;
         if (isOwnedHeader(h.name)) return false;
-        if (req.bearer != null and std.ascii.eqlIgnoreCase(h.name, "authorization")) return false;
-        return !(req.content_type != null and std.ascii.eqlIgnoreCase(h.name, "content-type"));
+        if (has_bearer and std.ascii.eqlIgnoreCase(h.name, "authorization")) return false;
+        return !(has_content_type and std.ascii.eqlIgnoreCase(h.name, "content-type"));
     }
 
     /// Refuses a response whose body is framed two ways or whose length is

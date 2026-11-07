@@ -4,6 +4,15 @@ Until 1.0, minor versions may break the API; each entry says how.
 
 ## Unreleased
 
+- `testing.FakeTransport` refuses what `HttpTransport` refuses before it
+  connects: a URL that would go out other than as written
+  (`error.InvalidEndpoint`), and a header HTTP cannot carry or the
+  transport writes itself, such as Content-Length, Host or
+  Accept-Encoding (`error.InvalidRequestHeader`). It took them before, so
+  a test passed on a request production refused. A refused request is
+  not recorded and does not use a scripted reply. The check is public,
+  `transport.checkRequest`, for a `Transport` of one's own. Breaks: a
+  test that sent such a request through the fake now gets the error.
 - Fixed: when the caller's arena ran out after a response's head (copying
   its headers, or the 64 KiB window a gzip or deflate body needs),
   `HttpTransport` kept the connection, and releasing the request had

@@ -213,7 +213,10 @@ that normalizes the path would send it to the parent resource.
 
 `testing.FakeTransport` answers from a script (a status, headers and body,
 or a transport error) and records every request, headers and body
-included. `FaultTransport` wraps another transport and cuts a body, stops a
+included. It refuses what `HttpTransport` refuses before connecting, a URL
+or a header it would not send, with the same error, so a test cannot pass
+on a request production refuses. A `Transport` of one's own can do the
+same through `transport.checkRequest`. `FaultTransport` wraps another transport and cuts a body, stops a
 download, or loses a response. `FakeTokenProvider`, `FakeClock` (whose
 sleeps are recorded, so a test of retries takes no time), `ScriptedServer`
 (a loopback server for code that needs a socket), `WipeChecker` and
