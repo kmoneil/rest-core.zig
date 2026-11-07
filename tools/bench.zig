@@ -10,6 +10,7 @@
 const std = @import("std");
 const http = std.http;
 const flate = std.compress.flate;
+const Crc32 = @import("Crc32");
 
 const runs = 7;
 
@@ -90,11 +91,13 @@ pub fn main(init: std.process.Init) !void {
     const both = try measure(io, 20, hashBoth, .{body});
     const crc_only = try measure(io, 20, hashCrc, .{body});
     const adler_only = try measure(io, 20, hashAdler, .{body});
+    const sliced = try measure(io, 20, hashSliced, .{body});
     try w.print("\nOne MiB decoded from gzip ({d} bytes zipped), us per MiB, {d} runs: min median max\n", .{ zipped.len, runs });
     try reportUs(w, "  inflate", inflate);
     try reportUs(w, "  CRC-32 and Adler-32 (before t70)", both);
-    try reportUs(w, "  CRC-32 only (gzip's, since t70)", crc_only);
+    try reportUs(w, "  std's CRC-32 only (t70 to t76)", crc_only);
     try reportUs(w, "  Adler-32 only (zlib's, since t70)", adler_only);
+    try reportUs(w, "  CRC-32 by eights (since t76)", sliced);
     try w.flush();
 }
 
@@ -129,6 +132,10 @@ fn hashCrc(bytes: []const u8) !void {
     var crc: std.hash.Crc32 = .init();
     crc.update(bytes);
     std.mem.doNotOptimizeAway(crc.final());
+}
+
+fn hashSliced(bytes: []const u8) !void {
+    std.mem.doNotOptimizeAway(Crc32.hash(bytes));
 }
 
 fn hashAdler(bytes: []const u8) !void {
@@ -176,9 +183,9 @@ fn measure(io: std.Io, iters: u64, comptime func: anytype, args: anytype) ![runs
 }
 
 fn report(w: *std.Io.Writer, label: []const u8, t: [runs]u64) !void {
-    try w.print("{s:<34} {d:>8} {d:>8} {d:>8}\n", .{ label, t[0], t[runs / 2], t[runs - 1] });
+    try w.print("{s:<38} {d:>8} {d:>8} {d:>8}\n", .{ label, t[0], t[runs / 2], t[runs - 1] });
 }
 
 fn reportUs(w: *std.Io.Writer, label: []const u8, t: [runs]u64) !void {
-    try w.print("{s:<34} {d:>8} {d:>8} {d:>8}\n", .{ label, t[0] / 1000, t[runs / 2] / 1000, t[runs - 1] / 1000 });
+    try w.print("{s:<38} {d:>8} {d:>8} {d:>8}\n", .{ label, t[0] / 1000, t[runs / 2] / 1000, t[runs - 1] / 1000 });
 }

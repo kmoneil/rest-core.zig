@@ -104,6 +104,7 @@ test "every pub declaration compiles, namespaces' too" {
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("CountingWriter.zig");
+    _ = @import("Crc32.zig");
     _ = @import("Diagnostics.zig");
     _ = @import("PreparedRequest.zig");
     _ = @import("loop.zig");

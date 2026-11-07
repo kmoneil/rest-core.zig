@@ -54,6 +54,10 @@ Until 1.0, minor versions may break the API; each entry says how.
   250 us less per MiB of gzip and 1.7 ms per MiB of deflate; and a
   response's headers are one copy of its head, not one per name and
   value. `zig build bench` measures both.
+- Faster: gzip's CRC-32 is computed eight bytes a step (`Crc32.zig`,
+  checked against std's on fuzzed input), about 0.36 ms a MiB where
+  std's byte-at-a-time one took 1.86 ms, more than the inflate. Decoding
+  a gzip body with its trailer checked costs about half what it did.
 
 ## 0.3.0 (2026-11-07)
 

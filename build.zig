@@ -211,6 +211,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tools/bench.zig"),
         .target = target,
         .optimize = .fast,
+        .imports = &.{.{ .name = "Crc32", .module = b.createModule(.{ .root_source_file = b.path("src/Crc32.zig") }) }},
     }) });
     b.step("bench", "Measure two per-response costs in the transport, ReleaseFast").dependOn(&b.addRunArtifact(bench).step);
 
