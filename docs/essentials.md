@@ -121,10 +121,15 @@ The `Cloud` an engine is made with is a namespace of four declarations,
 the cloud's own part of the loop. [examples/cloud_hook.zig](../examples/cloud_hook.zig)
 is a whole one.
 
-- `RefusalError`: the errors a refused response maps to.
+- `RefusalError`: the errors a refused response maps to. A named set, not
+  `anyerror`, and none of them (`OutOfMemory` aside) a name the transport
+  or the token provider returns too: a 408 called `TimedOut` would be
+  retried as the transport's, a CANCELLED called `Canceled` taken for a
+  cancel. gcp.zig names the latter `ServerCancelled`.
 - `refusal(scratch, res, diagnostics)`: reads a refused response into
   `diagnostics` (`set`, then `setRequestId` when the cloud names a request
-  id) and returns its error, or `error.OutOfMemory`. It sees at most
+  id) and returns its error, or `error.OutOfMemory`, which ends the call
+  as `bodyDelayMs` running out does. It sees at most
   `loop.max_hook_body` (64 KiB) of the body. An engine's own `refusal` can
   take its place, for a service whose refusals name their kind in the body.
 - `retryable(err, http_status)`: whether a failure is worth another
@@ -134,6 +139,9 @@ is a whole one.
 - `bodyDelayMs(scratch, body)`: a retry delay the body carries (Google's
   `google.rpc.RetryInfo`), or null. The loop reads the headers' delay
   itself.
+
+Each must be `pub`. `Engine` checks all of this when it is made, so a hook
+that breaks a rule fails to compile there, with a message saying which.
 
 Headers a cloud sends on every call go in the engine's `headers`; headers
 that belong to a credential, such as gcp.zig's `x-goog-user-project`, come

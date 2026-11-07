@@ -58,6 +58,24 @@ pub fn build(b: *std.Build) void {
         .filters = test_filters,
         .test_runner = test_runner,
     })).step);
+    // `Engine` holds a cloud's hook to its contract at compile time. Each
+    // file in test/compile_fail breaks one rule, and must fail to compile
+    // with the message that names it. (`contains` matches a line that ends
+    // with the text, so each is a message's tail.)
+    for ([_]struct { []const u8, []const u8 }{
+        .{ "missing_decl", "has no pub bodyDelayMs: a Cloud hook declares RefusalError, refusal, retryable and bodyDelayMs, each pub (see loop.zig's doc)" },
+        .{ "anyerror", ".RefusalError is anyerror, which would make every consumer's error set anyerror: name the refusals" },
+        .{ "shared_name", ".RefusalError has TimedOut, which the transport or the token provider returns too, so the loop would take the refusal for that failure: give it a name of its own, as gcp.zig's ServerCancelled" },
+    }) |case| {
+        const refused = b.addObject(.{ .name = case[0], .root_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("test/compile_fail/{s}.zig", .{case[0]})),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "rest_core", .module = mod }},
+        }) });
+        refused.expect_errors = .{ .contains = case[1] };
+        unit_step.dependOn(&refused.step);
+    }
 
     // The same tests with the library built ReleaseSafe and ReleaseFast. A
     // consumer builds this library in the mode it ships, and in ReleaseFast

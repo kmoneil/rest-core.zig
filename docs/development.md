@@ -30,6 +30,12 @@ std's runner carried unchanged. A ported file joins `complexity.zon`'s hot
 list in the change that ports it, and a baselined function it brings comes
 with its gcp.zig numbers.
 
+`zig build test-unit` also compiles each file in `test/compile_fail`, each
+a cloud hook that breaks one of the rules `Engine` checks at compile
+time, and passes when it fails with the message build.zig names (the
+tail of the line: `contains` matches a line that ends with it). A new
+rule gets a file there and a line in that list.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs, on every push to main and every pull
