@@ -2,7 +2,13 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
-## Unreleased
+## 0.6.0 (2026-11-13)
+
+TLS that refuses the certificates Zig 0.17.1's own client takes or
+crashes on, and a connect interrupted on macOS retried. Breaks, both in
+the first entry: `HttpTransport.client` is a patched copy of
+`std.http.Client`, and a build of `src/root.zig` outside rest-core's
+build.zig needs the `http_client` module.
 
 - `HttpTransport` carries std's TLS and HTTP clients, patched, in
   deps/zig-tls, after ekur's copy, so the gaps Zig 0.17.1's own client
