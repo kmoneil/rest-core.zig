@@ -5,7 +5,7 @@
 //! `git log` in its checkout. A fix made there is then carried here.
 //!
 //! The checkouts are found beside this one: gcp.zig at ../zig-gcp-pubsub,
-//! yaml.zig at ../yaml.zig; `--checkout` names another. Exit status: 0 when
+//! yaml.zig at ../yaml.zig, ekur at ../ekur; `--checkout` names another. Exit status: 0 when
 //! no source changed a file since its commit, 1 when one did (each listed,
 //! with its commits), 2 when a checkout is missing, a provenance line cannot
 //! be read, or git does not know a recorded commit. It never passes in
@@ -70,6 +70,7 @@ pub const Checkout = struct { repo: []const u8, dir: []const u8 };
 pub const default_checkouts = [_]Checkout{
     .{ .repo = "gcp.zig", .dir = "../zig-gcp-pubsub" },
     .{ .repo = "yaml.zig", .dir = "../yaml.zig" },
+    .{ .repo = "ekur", .dir = "../ekur" },
 };
 
 const Outcome = enum(u8) { unchanged = 0, changed = 1, unchecked = 2 };
@@ -244,10 +245,10 @@ test "nothing changed is a pass; an unknown commit or a repo with no checkout is
     try std.testing.expectEqual(.unchecked, bad[0]);
     try std.testing.expect(std.mem.find(u8, bad[1], "UnknownCommit") != null);
 
-    const nowhere = try checkedTree(&.{.{ "tools/x.zig", "// From ekur tools/x.zig at abcdef0.\n" }}, &quiet, &default_checkouts);
+    const nowhere = try checkedTree(&.{.{ "tools/x.zig", "// From inlay tools/x.zig at abcdef0.\n" }}, &quiet, &default_checkouts);
     defer std.testing.allocator.free(nowhere[1]);
     try std.testing.expectEqual(.unchecked, nowhere[0]);
-    try std.testing.expect(std.mem.find(u8, nowhere[1], "--checkout ekur=DIR") != null);
+    try std.testing.expect(std.mem.find(u8, nowhere[1], "--checkout inlay=DIR") != null);
 
     // No ported file at all: nothing was checked, which is not a pass.
     const none = try checkedTree(&.{.{ "src/own.zig", "//! Written here.\n" }}, &quiet, &default_checkouts);

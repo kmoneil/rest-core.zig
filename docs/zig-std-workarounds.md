@@ -110,9 +110,9 @@ last group was found while porting it. Each was checked against Zig
   or path length, nor keyUsage. So anyone holding a certificate a trusted
   root signed, for a domain of their own, can sign one for any host, and a
   man in the middle that presents the two is trusted, and is sent the
-  bearer token. `std.http.Client` builds the TLS client and verifies the
-  chain itself, out of the transport's reach. Not worked around:
-  test/security/CATALOG.md, CONN-10, and card t31.
+  bearer token. It also reads no extension but the subjectAltName, so a
+  certificate's extended key usage, the nameConstraints of a CA above it
+  and a critical extension it does not process go unheeded.
 - `std.crypto.Certificate`'s DER reader checks no length against the
   bytes it is given, and `std.crypto.tls.Client` parses every certificate
   a server sends before it checks any. A certificate that claims more
@@ -123,11 +123,19 @@ last group was found while porting it. Each was checked against Zig
   size of the server's key without checking its length
   (`PKCS1v1_5Signature.fromBytes` and `PSSSignature.fromBytes`; PR
   ziglang/zig#36695, open), so a longer one writes past a buffer on the
-  stack in ReleaseFast. Found by ekur, which carries its own copy of the
-  client; reproduced on 0.17.1, and master is the same. `std.http.Client`
-  builds the TLS client, out of the transport's reach. Not worked around:
-  test/security/CATALOG.md, CONN-11 and CONN-12, and card t78; until std
-  fixes them, a program should be built ReleaseSafe.
+  stack in ReleaseFast. Found by ekur; reproduced on 0.17.1, and master is
+  the same.
+- Both are worked around the only way open, as ekur does: `std.http.Client`
+  builds its TLS client in a private function, so the transport carries
+  std's TLS and HTTP clients in deps/zig-tls, patched, each signer held
+  to being a CA and each certificate to its stated limits
+  (src/tls_chain.zig), each certificate checked before std parses it
+  (src/tls_cert.zig), and an RSA signature held to its key's length.
+  tools/zig_tls.zig writes the copies from the installed Zig and `zig
+  build test` fails when they differ from that, so a Zig upgrade shows
+  which patch std has made unneeded (deps/zig-tls/VENDORED.md).
+  test/security/CATALOG.md, CONN-10 to CONN-13, and cards t31 and t78;
+  test/security/std_tls_test.zig holds std's own client to the crashes.
 - `std.crypto.tls.Client` cannot join a handshake message split across
   records, which RFC 8446 5.1 allows a server to send. Under TLS 1.3 it
   reads the record after the Certificate message into its other buffer,

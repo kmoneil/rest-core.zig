@@ -17,6 +17,9 @@ has not moved yet.
   0.17), streamed request and response bodies, gzip and deflate checked
   against their trailers, and the refusals std leaves out: a URL with a
   control byte, a header the transport owns, a response framed two ways.
+  Its TLS client is std's, carried with patches in deps/zig-tls, so a
+  certificate a non-CA signed, one outside the limits its chain states,
+  and a server's bytes that crash std's are refused.
   [Zig 0.17 workarounds](docs/zig-std-workarounds.md) lists each.
 - **`Engine`**, the request loop: a token on every attempt and a fresh one
   after a 401, retries with full-jitter backoff where the delay a server

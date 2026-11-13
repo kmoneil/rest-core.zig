@@ -4,15 +4,30 @@ Until 1.0, minor versions may break the API; each entry says how.
 
 ## Unreleased
 
-- Security catalog: CONN-11 and CONN-12, two gaps in Zig 0.17.1's TLS
-  client, which the transport has through `std.http.Client`. It reads
-  past a malformed certificate a server sends, before checking anything,
-  and it copies an RSA signature longer than the server's key past a
-  buffer on the stack. A safe build panics; ReleaseFast reads and writes
-  out of bounds. test/security/std_tls_test.zig holds std to both, over
-  canned TLS 1.2 flights each run in a process of its own
-  (test/security/std_tls_probe.zig). SECURITY.md and docs/essentials.md
-  say to build ReleaseSafe until std fixes them. From ekur.
+- `HttpTransport` carries std's TLS and HTTP clients, patched, in
+  deps/zig-tls, after ekur's copy, so the gaps Zig 0.17.1's own client
+  has are closed in the transport: a certificate signed by one that is
+  not a CA is refused (CONN-10, Codeberg ziglang/zig#35877), each
+  certificate is held to the limits it and the CAs above it state, its
+  extended key usage, their nameConstraints and any critical extension
+  (CONN-13), a certificate whose DER runs past its bytes is refused
+  before std reads past it (CONN-11), and an RSA signature longer than
+  the key before std copies it past its buffer (CONN-12, PR
+  ziglang/zig#36695). Each of the last two panicked a safe build, and
+  read or wrote out of bounds in ReleaseFast, on any server's bytes.
+  tools/zig_tls.zig writes the copies from the installed Zig (`zig build
+  zig-tls`) and `zig build test` checks them. The checks are
+  src/tls_chain.zig and src/tls_cert.zig, tested over ekur's
+  openssl-made chains, fuzzed over a server's first flight, and through
+  the transport. Breaks: `HttpTransport.client` is that copy of
+  `std.http.Client`, not `std.http.Client`; its fields are the same, so
+  code that sets one (`ca_bundle`, `now`) is unchanged, and code that
+  names the type or passes the client on must take `@TypeOf(ht.client)`.
+  A consumer that builds `rest_core` from `src/root.zig` itself, not
+  through its build.zig, must give it the `http_client` module too.
+  test/security/std_tls_test.zig holds std's own client to the crashes,
+  each case in a process of its own (test/security/std_tls_probe.zig).
+  From ekur, t78 and t31.
 - `HttpTransport`: an `error.Unexpected` from making a connection is
   `ConnectionResetByPeer` on every platform, and so retried, where off
   Windows it was a permanent `NetworkFailure`. On macOS a signal in a

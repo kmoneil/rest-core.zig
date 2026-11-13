@@ -2,12 +2,15 @@
 // and `zig build test` with it, runs `gnarl --check .`, which fails a
 // function over a critical limit for its class unless complexity.baseline
 // holds it at that number and it got no worse. A file named nowhere here is
-// normal. Nothing is vendored, so nothing is excluded; gnarl skips zig-pkg
-// and what git ignores by itself.
+// normal. gnarl skips zig-pkg and what git ignores by itself.
 .{
     // The release the code is judged by: a gnarl that counts otherwise
     // refuses --check. CI installs this one.
     .gnarl = "0.7.0",
+    // std's TLS and HTTP clients, copied with a few lines patched and held
+    // to std's file by tools/zig_tls.zig: std's code, not this repo's to
+    // shape (t78).
+    .exclude = .{"deps/**"},
     // What runs per request, response, retry or byte on a caller's path, held
     // to the tightest limits: the transport, retries and the server's delay,
     // the token seam, request previews, query and base64 encoding, the
