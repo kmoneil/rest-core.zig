@@ -1,6 +1,7 @@
-//! std's TLS client handed a hostile server's first flight, canned: the
-//! reproduction behind test/security/CATALOG.md's CONN-11 and CONN-12
-//! (t78). `std-tls-probe CASE` builds the flight CASE names, hands it to
+//! std's own TLS client handed a hostile server's first flight, canned:
+//! the bugs behind test/security/CATALOG.md's CONN-11 and CONN-12 (t78),
+//! which deps/zig-tls's copy of the client is patched against.
+//! `std-tls-probe CASE` builds the flight CASE names, hands it to
 //! `std.crypto.tls.Client.init` with no socket under it, and prints what
 //! init returned. On Zig 0.17.1 init never returns for any case but
 //! `control`: std reads past a certificate, or copies a signature past its

@@ -1,11 +1,11 @@
-//! std's TLS client against a hostile server's first flight (CONN-11 and
-//! CONN-12, t78). Each case runs in std_tls_probe.zig's process, since on
-//! Zig 0.17.1 std panics on every one in a safe build (in ReleaseFast it
-//! reads or writes out of bounds instead), and std.http.Client, beneath the
-//! transport, hands every certificate a server sends to the same code. The
-//! tests hold std to its bugs: once one fails, std refuses those bytes with
-//! an error, which is what the test should then expect, and its row turns
-//! covered.
+//! std's own TLS client against a hostile server's first flight: why
+//! deps/zig-tls patches it (CONN-11, CONN-12; t78). Each case runs in
+//! std_tls_probe.zig's process, since on Zig 0.17.1 std panics on every one
+//! in a safe build (in ReleaseFast it reads or writes out of bounds
+//! instead). The transport is not on this client; tls_client_test.zig
+//! shows its copy refuses the same bytes. These hold std to its bugs: once
+//! one fails, std refuses those bytes itself, and the patch for it in
+//! tools/zig_tls.zig can go.
 
 const std = @import("std");
 const testing = std.testing;
@@ -46,14 +46,14 @@ fn expectPanics(case: probe.Case, message: []const u8) !void {
     const first_line = std.mem.sliceTo(r.stderr, '\n');
     if (r.code == probe.panic_exit and std.mem.startsWith(u8, first_line, "panic: ") and std.mem.eql(u8, first_line["panic: ".len..], message)) return;
     if (r.code == 0) {
-        std.debug.print("std-tls-probe {t}: std {s}, where Zig 0.17.1 panicked ({s}). Expect that error here, and turn the catalog row covered (t78).\n", .{ case, std.mem.trimEnd(u8, r.stdout, "\n"), message });
+        std.debug.print("std-tls-probe {t}: std {s}, where Zig 0.17.1 panicked ({s}). The patch for it in tools/zig_tls.zig may go now (t78): check that the transport's copy refuses the same, then drop the patch and this case.\n", .{ case, std.mem.trimEnd(u8, r.stdout, "\n"), message });
     } else {
         std.debug.print("std-tls-probe {t}: expected std's panic \"{s}\"; it exited {?d} and printed:\n{s}{s}\n", .{ case, message, r.code, r.stdout, r.stderr });
     }
     return error.TestUnexpectedResult;
 }
 
-test "security: CWE-125 std's TLS client reads past a certificate a server sends, before checking anything (Zig 0.17.1)" {
+test "std 0.17.1's own TLS client reads past a certificate a server sends, before checking anything, so deps/zig-tls checks it first" {
     // The control: a chain the root signed, for the host, gets as far as
     // the server's signature, which is wrong.
     try expectReturns(.control, error.InvalidSignature);
@@ -76,7 +76,7 @@ test "security: CWE-125 std's TLS client reads past a certificate a server sends
     try expectPanics(.rsa_key, "index out of bounds: index 131, len 8");
 }
 
-test "security: CWE-787 std's TLS client copies an RSA signature longer than the key past its buffer (PR ziglang/zig#36695)" {
+test "std 0.17.1's own TLS client copies an RSA signature longer than the key past its buffer (PR ziglang/zig#36695), so deps/zig-tls checks its length" {
     // The control: a signature as long as the key, the wrong bytes, is
     // refused.
     try expectReturns(.control, error.InvalidSignature);

@@ -1,13 +1,16 @@
 //! TLS against a real server, `openssl s_server` with certificates made for
 //! the run: what the transport refuses, what a head past a TLS record does,
-//! and what std's TLS client gets wrong. Each test of the last holds std to
-//! its bug, so it fails once std fixes it. It needs `openssl` on the PATH
-//! and a machine where a test may listen on a port: CI runs it (`zig build
+//! and what std's TLS client, which the transport has in a patched copy
+//! (deps/zig-tls), still cannot do. Each test of the last holds std to its
+//! limit, so it fails once std lifts it. It needs `openssl` on the PATH and
+//! a machine where a test may listen on a port: CI runs it (`zig build
 //! test-tls`); `zig build test` only compiles it.
 
 const std = @import("std");
 const rest_core = @import("rest_core");
 const HttpTransport = rest_core.transport.HttpTransport;
+/// The transport's TLS client: std's, with deps/zig-tls's patches.
+const TlsClient = @import("zig_tls");
 const Io = std.Io;
 const testing = std.testing;
 
@@ -185,9 +188,9 @@ fn getTrusted(io: Io, dir: Io.Dir, arena: std.mem.Allocator, url: []const u8) !r
     }
 }
 
-/// std's own TLS handshake with the server on `port`, for localhost,
+/// The transport's TLS client's handshake with the server on `port`, for localhost,
 /// trusting the run's CA, its clock at `now`: the error
-/// `std.crypto.tls.Client.init` returns, which the transport reports only
+/// `TlsClient.init` returns, which the transport reports only
 /// as `error.TlsFailure`. Waits for the server to come up.
 fn handshake(io: Io, dir: Io.Dir, port: u16, now: Io.Timestamp) !void {
     var attempt: usize = 0;
@@ -211,14 +214,14 @@ fn handshakeOnce(io: Io, dir: Io.Dir, port: u16, now: Io.Timestamp) !void {
     const stream = try address.connect(io, .{ .mode = .stream });
     defer stream.close(io);
     // As std.http.Client lays them out, each a whole record long.
-    const len = std.crypto.tls.Client.min_buffer_len;
+    const len = TlsClient.min_buffer_len;
     const bufs = try gpa.alloc(u8, 4 * len);
     defer gpa.free(bufs);
     var reader = stream.reader(io, bufs[0..len]);
     var writer = stream.writer(io, bufs[len..][0..len]);
-    var entropy: [std.crypto.tls.Client.Options.entropy_len]u8 = undefined;
+    var entropy: [TlsClient.Options.entropy_len]u8 = undefined;
     io.random(&entropy);
-    _ = try std.crypto.tls.Client.init(&reader.interface, &writer.interface, .{
+    _ = try TlsClient.init(&reader.interface, &writer.interface, .{
         .host = .{ .explicit = "localhost" },
         .ca = .{ .bundle = .{ .gpa = gpa, .io = io, .lock = &lock, .bundle = &bundle } },
         .read_buffer = bufs[2 * len ..][0..len],
@@ -273,7 +276,7 @@ test "security: CWE-295 https takes a certificate only from a root it trusts, fo
     }
     // Three days on, the certificate has expired and its CA has not. The
     // transport resets a TLS clock that runs ahead of the real one, so this
-    // drives std's handshake, the check the transport relies on, with the
+    // drives the transport's TLS client's handshake, the check it relies on, with the
     // clock moved.
     const now = Io.Clock.real.now(io);
     handshake(io, tmp.dir, server.port, now) catch |err| return failed(err, &server, io, tmp.dir);
@@ -308,7 +311,7 @@ test "security: CWE-617 a head under std's 8 KiB is read, and one past a TLS rec
     try testing.expectError(error.HttpProtocolError, getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/long.txt")));
 }
 
-test "security: CWE-296 std takes a certificate signed by one that is not a CA (Codeberg ziglang/zig#35877)" {
+test "security: CWE-296 the transport refuses a certificate signed by one that is not a CA, from openssl s_server" {
     const io = testing.io;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -316,20 +319,24 @@ test "security: CWE-296 std takes a certificate signed by one that is not a CA (
     try tmp.dir.writeFile(io, .{ .sub_path = "ok.txt", .data = ok_reply });
     // forged.pem for localhost, signed by leaf.pem, which the CA signed for
     // attacker.example with CA:FALSE: a client must refuse the chain (RFC
-    // 5280 4.2.1.9). Zig 0.17.1's takes it, so a man in the middle with any
-    // certificate a trusted root signed is taken for any host. This test
-    // holds std to the bug. Once it fails, std refuses the chain: expect
-    // error.TlsFailure here, and set CONN-10 covered (t31).
+    // 5280 4.2.1.9). Zig 0.17.1's own client takes it (Codeberg
+    // ziglang/zig#35877), so a man in the middle with any certificate a
+    // trusted root signed was taken for any host; the transport's copy
+    // checks each signer is a CA (src/tls_chain.zig, t78).
     var server: Server = try .start(io, tmp.dir, .{ .cert = "forged", .chain = "leaf.pem" });
     defer server.stop(io);
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     var buf: [128]u8 = undefined;
-    const res = getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/ok.txt")) catch |err| return failed(err, &server, io, tmp.dir);
-    try testing.expectEqual(200, res.status);
+    if (getTrusted(io, tmp.dir, arena.allocator(), server.url(&buf, "localhost", "/ok.txt"))) |_| {
+        std.debug.print("the forged chain was taken\n", .{});
+        return error.TestUnexpectedResult;
+    } else |err| if (err != error.TlsFailure) return failed(err, &server, io, tmp.dir);
+    // Why, from the handshake itself: the signer is no CA.
+    try testing.expectError(error.CertificateIssuerNotCa, handshake(io, tmp.dir, server.port, Io.Clock.real.now(io)));
 }
 
-test "std's TLS client cannot reach a server that splits its handshake into small records, or a TLS 1.2 one with an ECDSA key" {
+test "std's TLS client, the transport's too, cannot reach a server that splits its handshake into small records, or a TLS 1.2 one with an ECDSA key" {
     // Each holds std to what it cannot do, and fails once std can.
     const io = testing.io;
     var tmp = testing.tmpDir(.{});

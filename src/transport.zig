@@ -1,7 +1,8 @@
 // Ported from gcp.zig src/core/transport.zig at eae944c. gcp.zig has built on this copy since its 5aa9ba8.
 //! The HTTP seam. Every request goes through a `Transport`, so the standard
 //! library's HTTP churn stays in this file and tests can substitute a fake.
-//! `HttpTransport` is the `std.http.Client` implementation.
+//! `HttpTransport` is the implementation over std's HTTP client, carried
+//! as `HttpClient` with a patched TLS client beneath it (deps/zig-tls).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -9,6 +10,12 @@ const flate = std.compress.flate;
 const Crc32 = @import("Crc32.zig");
 const Allocator = std.mem.Allocator;
 const http = std.http;
+/// std.http.Client, its TLS client the copy in deps/zig-tls: each signer
+/// in a server's chain checked to be a CA, each certificate held to the
+/// limits it states and checked before std parses it, and an RSA
+/// signature held to its key's length (t78; CONN-10 to CONN-13).
+/// Everything else in it is std's, from the Zig that builds rest-core.
+const HttpClient = @import("http_client");
 
 /// HEAD is answered with a head alone: whatever Content-Length or
 /// Transfer-Encoding the answer carries describes the body a GET would
@@ -333,11 +340,12 @@ pub const default_max_response_bytes = 32 * 1024 * 1024;
 /// How long std.http's TLS clock reading is trusted before it is reloaded.
 pub const tls_clock_max_age: std.Io.Duration = .fromSeconds(60 * 60);
 
-/// A `Transport` over `std.http.Client`: HTTP/1.1, keep-alive, one connection
-/// pool. Not thread-safe: one task sends through it at a time. What a send
-/// returns lives in the arena it was given.
+/// A `Transport` over std's HTTP client (`HttpClient`, its TLS patched):
+/// HTTP/1.1, keep-alive, one connection pool. Not thread-safe: one task
+/// sends through it at a time. What a send returns lives in the arena it
+/// was given.
 pub const HttpTransport = struct {
-    client: http.Client,
+    client: HttpClient,
     /// Borrowed; must outlive the transport.
     user_agent: []const u8,
     max_response_bytes: usize = default_max_response_bytes,
@@ -435,7 +443,7 @@ pub const HttpTransport = struct {
     /// makes the next HTTPS request reload the clock and the CA bundle, so a
     /// long-lived client accepts rotated certificates and rejects expired ones.
     fn expireTlsClock(self: *HttpTransport, when: enum { now, when_stale }) void {
-        if (http.Client.disable_tls) return;
+        if (HttpClient.disable_tls) return;
         const io = self.client.io;
         self.client.ca_bundle_lock.lockUncancelable(io);
         defer self.client.ca_bundle_lock.unlock(io);
@@ -447,7 +455,7 @@ pub const HttpTransport = struct {
     fn exchange(
         self: *HttpTransport,
         uri: std.Uri,
-        protocol: http.Client.Protocol,
+        protocol: HttpClient.Protocol,
         req: StreamRequest,
         arena: Allocator,
     ) StreamError!StreamResponse {
@@ -496,7 +504,7 @@ pub const HttpTransport = struct {
     /// ("[::1]"), which finds nothing. An emulator binds [::1] by default,
     /// so connect to the bare address and let the request use that
     /// connection. Plain HTTP only: std's TLS setup expects its own path.
-    fn preconnect(self: *HttpTransport, uri: std.Uri, protocol: http.Client.Protocol) Error!?*http.Client.Connection {
+    fn preconnect(self: *HttpTransport, uri: std.Uri, protocol: HttpClient.Protocol) Error!?*HttpClient.Connection {
         const address = ipv6Literal(uri) orelse return null;
         if (protocol != .plain) return null;
         return self.client.connectTcp(.{ .bytes = address }, uri.port orelse 80, .plain) catch |err| return mapConnectError(err);
@@ -506,8 +514,8 @@ pub const HttpTransport = struct {
     /// that end at the head returned, and otherwise its body read.
     fn readResponse(
         self: *HttpTransport,
-        request: *http.Client.Request,
-        head: http.Client.Response.Head,
+        request: *HttpClient.Request,
+        head: HttpClient.Response.Head,
         req: StreamRequest,
         arena: Allocator,
     ) StreamError!StreamResponse {
@@ -553,8 +561,8 @@ pub const HttpTransport = struct {
     /// its own trailer, which std's decoder reads and never checks.
     fn readBody(
         self: *HttpTransport,
-        request: *http.Client.Request,
-        head: http.Client.Response.Head,
+        request: *HttpClient.Request,
+        head: HttpClient.Response.Head,
         accept: StreamRequest.AcceptEncoding,
         to_writer: ?*std.Io.Writer,
         arena: Allocator,
@@ -618,10 +626,10 @@ pub const HttpTransport = struct {
     /// host must be one std will name (RFC 1123), as `client.request`
     /// refuses any other, except an IPv6 literal over plain HTTP, which
     /// the transport connects to itself (`preconnect`).
-    fn target(url: []const u8) Error!struct { std.Uri, http.Client.Protocol } {
+    fn target(url: []const u8) Error!struct { std.Uri, HttpClient.Protocol } {
         const uri = std.Uri.parse(url) catch return error.InvalidEndpoint;
         try checkUrl(url, uri);
-        const protocol = http.Client.Protocol.fromUri(uri) orelse return error.InvalidEndpoint;
+        const protocol = HttpClient.Protocol.fromUri(uri) orelse return error.InvalidEndpoint;
         if (ipv6Literal(uri) == null or protocol != .plain) {
             var host_buf: [std.Io.net.HostName.max_len]u8 = undefined;
             _ = std.Io.net.HostName.fromUri(uri, &host_buf) catch return error.InvalidEndpoint;
@@ -683,7 +691,7 @@ pub const HttpTransport = struct {
     /// and values sliced from it (about 160 ns less per response than a
     /// copy of each, by `zig build bench`). std.http bounds the head by the
     /// connection's read buffer, so this copy is bounded too.
-    fn collectHeaders(head: http.Client.Response.Head, arena: Allocator) Allocator.Error![]const Header {
+    fn collectHeaders(head: HttpClient.Response.Head, arena: Allocator) Allocator.Error![]const Header {
         const copy = try arena.dupe(u8, head.bytes);
         var headers: std.ArrayList(Header) = .empty;
         var it: http.HeaderIterator = .init(copy);
@@ -772,7 +780,7 @@ fn httpMethod(method: Method) http.Method {
 }
 
 /// What `Accept-Encoding` says for `accept`.
-fn acceptEncoding(accept: StreamRequest.AcceptEncoding) http.Client.Request.Headers.Value {
+fn acceptEncoding(accept: StreamRequest.AcceptEncoding) HttpClient.Request.Headers.Value {
     return switch (accept) {
         .compressed => .default,
         .identity => .{ .override = "identity" },
@@ -790,7 +798,7 @@ const ReadBody = struct {
 /// Where a response body is read from, for the functions that read it, and
 /// for `bodyError`, which says why a read failed.
 const BodySource = struct {
-    request: *http.Client.Request,
+    request: *HttpClient.Request,
     dechunker: ?*Dechunker,
     transfer: *std.Io.Reader,
     encoding: http.ContentEncoding,
@@ -929,7 +937,7 @@ fn ipv6Literal(uri: std.Uri) ?[]const u8 {
 /// reader, `EndOfStream` a body reader that ended before its declared
 /// length, and `WriteFailed` the connection, whose detail `mapError` reads.
 fn sendBody(
-    request: *http.Client.Request,
+    request: *HttpClient.Request,
     body: StreamRequest.Body,
 ) error{ ReadFailed, WriteFailed, EndOfStream }!void {
     // The body writer needs a buffer of its own: a reader-backed source
@@ -945,23 +953,36 @@ fn sendBody(
             request.transfer_encoding = .{ .content_length = total };
             var body_writer = try request.sendBodyUnflushed(&body_buffer);
             for (segments) |s| try body_writer.writer.writeAll(s);
-            try body_writer.end();
-            try request.connection.?.flush();
+            try bodyEnd(request, &body_writer);
         },
         .stream => |source| {
             request.transfer_encoding = .{ .content_length = source.len };
             var body_writer = try request.sendBodyUnflushed(&body_buffer);
             try source.reader.streamExact64(&body_writer.writer, source.len);
-            try body_writer.end();
-            try request.connection.?.flush();
+            try bodyEnd(request, &body_writer);
         },
     }
+}
+
+/// Ends a body sent with its length, all of it written, and flushes it.
+/// std's BodyWriter tells the request so itself, clearing
+/// `payload_pending`, but its link to the request is typed for std's
+/// Request, not `HttpClient`'s, so the copy leaves it null
+/// (tools/zig_tls.zig) and this does what `end` would have. The flag
+/// matters only to a request freed with its response's body unread (the
+/// transport marks the connection ready once it has read one): std then
+/// drains that body and keeps the connection, unless a body sent was
+/// never ended.
+fn bodyEnd(request: *HttpClient.Request, body_writer: *http.BodyWriter) http.BodyWriter.Error!void {
+    try body_writer.end();
+    request.payload_pending = false;
+    try request.connection.?.flush();
 }
 
 /// Maps a failed body read. A body cut short by a dropped connection is
 /// retryable; one that arrived whole but would not decode is not.
 fn bodyError(
-    request: *http.Client.Request,
+    request: *HttpClient.Request,
     dechunker: ?*Dechunker,
     transfer: *std.Io.Reader,
     encoding: http.ContentEncoding,
@@ -1101,7 +1122,7 @@ pub const Dechunker = struct {
 
 /// Maps a `std.http` or `std.Io.net` failure to `Error`. `ReadFailed` and
 /// `WriteFailed` carry no detail, so the connection's recorded error is used.
-fn mapError(err: anyerror, connection: ?*http.Client.Connection) Error {
+fn mapError(err: anyerror, connection: ?*HttpClient.Connection) Error {
     return switch (err) {
         error.ReadFailed => if (connection) |c|
             if (c.stream_reader.err) |e| mapError(e, null) else socketOk(c)
@@ -1191,11 +1212,11 @@ fn mapConnectError(err: anyerror) Error {
 
 /// A read or write failed but the socket recorded no error, so the TLS layer
 /// (or a peer that closed cleanly) caused it.
-fn socketOk(connection: *const http.Client.Connection) Error {
+fn socketOk(connection: *const HttpClient.Connection) Error {
     return if (connection.protocol == .tls) error.TlsFailure else error.ConnectionResetByPeer;
 }
 
-// Tests use a real `std.http.Client` against a scripted server on the loopback
+// Tests use a real `HttpClient` against a scripted server on the loopback
 // interface. Nothing leaves the machine.
 
 const testing = std.testing;
@@ -2103,7 +2124,7 @@ test "HttpTransport: a chunk-size line longer than the read buffer is a protocol
 }
 
 test "HttpTransport: a failed TLS handshake forgets the TLS clock" {
-    if (http.Client.disable_tls) return error.SkipZigTest;
+    if (HttpClient.disable_tls) return error.SkipZigTest;
     const io = testing.io;
     var server: ScriptedServer = try .start(io, &.{});
     defer server.deinit(io);
@@ -2129,7 +2150,7 @@ test "HttpTransport: a failed TLS handshake forgets the TLS clock" {
 }
 
 test "HttpTransport: a TLS clock older than an hour is reloaded" {
-    if (http.Client.disable_tls) return error.SkipZigTest;
+    if (HttpClient.disable_tls) return error.SkipZigTest;
     var ht: HttpTransport = .init(testing.allocator, testing.io, "t");
     defer ht.deinit();
     const now = std.Io.Clock.real.now(testing.io);

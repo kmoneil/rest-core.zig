@@ -26,15 +26,15 @@ hands a client `testing.FakeTransport` instead.
   `std.Io.Threaded.init(gpa, .{ .async_limit = .unlimited })`, or a limit
   with room for a DNS lookup and a connect per address the host returns
   (std takes up to 32 at a time) beyond your program's own `async` tasks.
-- **TLS** is std's: the chain checked against the system's roots, the
-  name against the host, the dates against the clock, with no option to
-  turn any of it off. Known holes, std's: Zig 0.17.1 takes a certificate
-  signed by one that is not a CA (Codeberg ziglang/zig#35877), so a man in
-  the middle holding any publicly trusted certificate can pass for any
-  host; and a malformed certificate or an RSA signature longer than the
-  server's key makes it read or write out of bounds, a panic in a safe
-  build. So build a program that talks to a network ReleaseSafe, not
-  ReleaseFast, until std fixes them. SECURITY.md says more.
+- **TLS** is std's, patched: the chain checked against the system's
+  roots, the name against the host, the dates against the clock, with no
+  option to turn any of it off. Zig 0.17.1's own client takes a
+  certificate signed by one that is not a CA (Codeberg ziglang/zig#35877),
+  reads no limit a certificate states, and reads or writes out of bounds
+  on a malformed certificate or an RSA signature longer than the key, so
+  the transport carries a copy of it (deps/zig-tls) that refuses all
+  three. `HttpTransport.client` is that copy of `std.http.Client`, its
+  fields std's. SECURITY.md says more.
 - **What it refuses before sending.** A URL with a control byte, a space or
   a backslash, userinfo, or a percent-encoded host
   (`error.InvalidEndpoint`): std would write a CR and LF in the path into

@@ -1,17 +1,19 @@
 //! rest-core: the cloud-neutral half of a REST client for Zig 0.17.
 //!
-//! An HTTP transport over `std.http.Client` with a per-request timeout,
-//! retries with full-jitter backoff that honour a server's own delay,
-//! `Owned` results, a token-provider seam, RFC 3339 and RFC 1123 time, RSA
-//! signing, a wiping allocator, and fakes for tests. Each cloud's library
-//! adds its endpoints, error bodies, retry classes and credentials.
+//! An HTTP transport over std's HTTP client, its TLS client patched, with a
+//! per-request timeout, retries with full-jitter backoff that honour a
+//! server's own delay, `Owned` results, a token-provider seam, RFC 3339
+//! and RFC 1123 time, RSA signing, a wiping allocator, and fakes for
+//! tests. Each cloud's library adds its endpoints, error bodies, retry
+//! classes and credentials.
 //!
 //! Most of it began in gcp.zig's `core`; docs/development.md says what
 //! came from where, and what changed on the way.
 
 /// The HTTP seam: implement `transport.Transport` to send requests another
 /// way, or to fake the server in tests. `transport.HttpTransport` is the
-/// `std.http.Client` one, with a per-request time limit.
+/// one over std's HTTP client, with a per-request time limit and the TLS
+/// checks std leaves out.
 pub const transport = @import("transport.zig");
 
 /// The request loop every module of a cloud runs: credentials, retries,

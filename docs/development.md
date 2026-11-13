@@ -19,6 +19,7 @@ zig build security                      # the security suite, and its catalog ch
 zig build test-tls                      # TLS against openssl s_server: needs openssl, and a port to listen on
 zig build doc-examples                  # the docs' examples against examples/, and their links (-- --fix rewrites the copies)
 zig build provenance                    # what each ported file's source changed since its commit
+zig build zig-tls                       # write deps/zig-tls from this Zig's std (`test` checks the copies)
 ```
 
 `lint` and `complexity` run programs from the PATH (CONTRIBUTING.md says
@@ -87,8 +88,9 @@ table below does, and nothing is checked against gcp.zig any more.
 Two tools came from yaml.zig and still track it: their first line,
 `// From yaml.zig <path> at <commit>`, lets a fix made in either be
 carried to the other. `zig build provenance` reads those lines and asks
-git, in the checkouts beside this one (yaml.zig at `../yaml.zig`;
-`zig build provenance -- --checkout yaml.zig=DIR` names another), what
+git, in the checkouts beside this one (yaml.zig at `../yaml.zig`, ekur
+at `../ekur`; `zig build provenance -- --checkout yaml.zig=DIR` names
+another), what
 changed in each source file since its recorded commit. It exits 0 when
 nothing did, 1 when something did, listing the commits, and 2 when a
 checkout or a commit is missing. To carry a fix: read the listed commits,
@@ -162,3 +164,16 @@ escapes control bytes.
 tools/security_catalog.zig came from yaml.zig (7cd3941), not gcp.zig, and
 tools/doc_examples.zig from yaml.zig too (7cd3941), with a check of the
 documents' relative links added.
+
+The TLS checks came from ekur (t78; its t380, t382, t383) and track it
+the same way: src/tls_chain.zig and src/tls_cert.zig, tools/zig_tls.zig
+(less ekur's TLS 1.2 ECDSA suites, with std's HTTP client added), and
+test/security/tls_client_test.zig, with ekur's test certificates in
+src/testdata/tls_chain (tools/tls_chain_certs.sh makes them, and its
+README says what each chain is). tools/zig_tls.zig writes deps/zig-tls,
+std's TLS and HTTP clients with the patches that call those checks;
+`zig build test` fails when a copy is not exactly std's file from the
+installed Zig plus the patches, and on a Zig upgrade `zig build zig-tls`
+writes them again, or names the patch whose line std moved.
+deps/zig-tls/VENDORED.md says what each patch is for and when it can go.
+gnarl and zigvet leave deps/ alone: it is std's code.

@@ -39,32 +39,33 @@ request forgery of its own.
 attack on an HTTP and REST client, with the test that proves the defence,
 the work that will add it, or the reason it does not apply.
 
+## TLS
+
+Zig 0.17.1's TLS client, which `std.http.Client` builds, takes a
+certificate signed by one that is not a CA (Codeberg ziglang/zig#35877;
+the fix, PR #37354, is not merged), reads no certificate extension but
+the subjectAltName, parses each certificate a server sends with a DER
+reader that trusts every length, and copies an RSA signature into a
+buffer the size of the key without checking its length (PR
+ziglang/zig#36695, open). So a man in the middle with any certificate a
+trusted root signed could pass for any host and be sent the bearer
+token, and any server could crash the client, or in ReleaseFast make it
+read and write out of bounds.
+
+rest-core's transport does not use std's client as it is. It carries
+std's TLS and HTTP clients in deps/zig-tls, patched after ekur's: each signer in a
+chain is held to being a CA (CONN-10), each certificate is held to the
+limits it and the CAs above it state (extended key usage,
+nameConstraints, critical extensions: CONN-13), each certificate a
+server sends is checked before std parses it (CONN-11), and an RSA
+signature is held to its key's length (CONN-12). `zig build test` fails
+when the copy is not exactly std's file plus those patches, so a Zig
+upgrade cannot leave an old copy behind; deps/zig-tls/VENDORED.md says
+when a patch can go.
+
 ## Known gaps
 
-**TLS takes a certificate signed by one that is not a CA.** Zig 0.17.1's
-TLS client, which `std.http.Client` and so rest-core's transport use,
-checks each certificate in a server's chain by its signature and issuer
-alone, not whether its issuer may issue certificates (Codeberg
-ziglang/zig#35877 and #37353; the fix, PR #37354, is not merged). Anyone
-holding a certificate a trusted root signed, for a domain of their own,
-can sign one for any host, and a man in the middle that presents it is
-trusted with the bearer token. Every Zig 0.17.1 HTTPS client shares it.
-The catalog's CONN-10 tracks it, with a test that fails once std fixes
-it.
-
-**A TLS server's bytes can crash the client, and in ReleaseFast go out
-of bounds.** The same TLS client reads every certificate a server sends
-with a DER parser that checks no length against the bytes it was given,
-before it checks any signature or name: a malformed certificate panics
-a safe build and reads past its buffer in ReleaseFast, and a man in the
-middle needs no certificate of their own to send one (no upstream issue
-found). It also copies an RSA signature into a buffer the size of the
-server's key without checking its length, so one longer than the key
-panics a safe build and writes past a buffer on the stack in
-ReleaseFast; that needs a chain the client trusts, which any server with
-a certificate for the host has, and which CONN-10 lets a man in the
-middle make (the fix, PR ziglang/zig#36695, is not merged). Every Zig
-0.17.1 HTTPS client shares both. Until std fixes them, build a program
-that uses rest-core over a network ReleaseSafe, not ReleaseFast: then a
-crash is the worst a server can do. The catalog's CONN-11 and CONN-12
-track them, with tests that fail once std fixes them.
+The TLS client checks no certificate's revocation (neither OCSP nor
+CRLs), as std's does not. The catalog lists every other gap, each with
+its card: CONN-08, a time limit that std's connect can outrun when an
+`Io`'s async capacity is spent, is one.

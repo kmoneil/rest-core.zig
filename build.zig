@@ -5,11 +5,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // The module a consumer imports: `b.dependency("rest_core", .{})
-    // .module("rest_core")`.
+    // .module("rest_core")`. Its transport's HTTP client is std's, carried
+    // in deps/zig-tls with a patched TLS client beneath it (t78).
+    const tls = zigTls(b, target, optimize);
     const mod = b.addModule("rest_core", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "http_client", .module = tls.http_client }},
     });
 
     const test_filters = b.option(
@@ -41,6 +44,15 @@ pub fn build(b: *std.Build) void {
         .test_runner = test_runner,
         .use_llvm = if (fuzz_runner) true else null,
     })).step);
+    // src/tls_chain.zig is a module of its own, which the TLS client in
+    // deps/zig-tls imports by name, so rest_core's tests do not reach its.
+    unit_step.dependOn(&b.addRunArtifact(b.addTest(.{
+        .name = "tls-chain",
+        .root_module = tls.tls_chain,
+        .filters = test_filters,
+        .test_runner = test_runner,
+    })).step);
+    addZigTlsCheck(b, test_step, test_runner);
     // test/security/std_tls_probe.zig: std's TLS client handed a hostile
     // server's first flight, a case a run, for std_tls_test.zig. std panics
     // on each, so each runs in a process of its own, built Debug in every
@@ -59,7 +71,7 @@ pub fn build(b: *std.Build) void {
     // the public API only. Each is a row of test/security/CATALOG.md.
     const security_tests = b.addTest(.{
         .name = "security",
-        .root_module = securityModule(b, target, optimize, mod, probe_mod),
+        .root_module = securityModule(b, target, optimize, mod, tls, probe_mod),
         .filters = test_filters,
         .test_runner = test_runner,
         .use_llvm = if (fuzz_runner) true else null,
@@ -97,10 +109,12 @@ pub fn build(b: *std.Build) void {
     // than a panic. `zig build test test-release` runs all three.
     const release_step = b.step("test-release", "Run the unit tests with the library built ReleaseSafe and ReleaseFast");
     for ([_]std.lang.Optimize{ .safe, .fast }) |mode| {
+        const release_tls = zigTls(b, target, mode);
         const release_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = mode,
+            .imports = &.{.{ .name = "http_client", .module = release_tls.http_client }},
         });
         release_step.dependOn(&b.addRunArtifact(b.addTest(.{
             .name = @tagName(mode),
@@ -109,8 +123,14 @@ pub fn build(b: *std.Build) void {
             .test_runner = test_runner,
         })).step);
         release_step.dependOn(&b.addRunArtifact(b.addTest(.{
+            .name = b.fmt("tls-chain-{t}", .{mode}),
+            .root_module = release_tls.tls_chain,
+            .filters = test_filters,
+            .test_runner = test_runner,
+        })).step);
+        release_step.dependOn(&b.addRunArtifact(b.addTest(.{
             .name = b.fmt("security-{t}", .{mode}),
-            .root_module = securityModule(b, target, mode, release_mod, probe_mod),
+            .root_module = securityModule(b, target, mode, release_mod, release_tls, probe_mod),
             .filters = test_filters,
             .test_runner = test_runner,
         })).step);
@@ -179,7 +199,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("test/tls/tls_test.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "rest_core", .module = mod }},
+            .imports = &.{
+                .{ .name = "rest_core", .module = mod },
+                // The transport's TLS client, for a handshake driven
+                // directly, as `mod`'s HTTP client has it.
+                .{ .name = "zig_tls", .module = tls.tls_client },
+            },
         }),
         .filters = test_filters,
         .test_runner = test_runner,
@@ -236,17 +261,76 @@ pub fn build(b: *std.Build) void {
 }
 
 /// The security suite's module, over `rest_core` built as `mod` is.
-fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, mod: *std.Build.Module, probe: *std.Build.Module) *std.Build.Module {
+fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, mod: *std.Build.Module, tls: ZigTls, probe: *std.Build.Module) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("test/security/security_test.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "rest_core", .module = mod },
+            // The transport's TLS client, which tls_client_test.zig drives
+            // over canned flights, as `mod`'s HTTP client has it, and the
+            // certificates it sends (src/testdata/tls_chain).
+            .{ .name = "zig_tls", .module = tls.tls_client },
+            .{ .name = "tls_chain_certs", .module = b.createModule(.{ .root_source_file = b.path("src/testdata/tls_chain/certs.zig") }) },
             // std_tls_probe.zig's program, which std_tls_test.zig runs.
             .{ .name = "std_tls_probe_bin", .module = probe },
         },
     });
+}
+
+/// deps/zig-tls: std's TLS client, patched (t78: each signer in a
+/// server's chain checked to be a CA, each certificate held to the limits
+/// it states and checked before std parses it, an RSA signature held to
+/// its key's length), and std's HTTP client over it, which the transport
+/// uses. `tls_chain` is src/tls_chain.zig, the checks the patches call.
+const ZigTls = struct {
+    tls_chain: *std.Build.Module,
+    tls_client: *std.Build.Module,
+    http_client: *std.Build.Module,
+};
+
+fn zigTls(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) ZigTls {
+    const tls_chain = b.createModule(.{ .root_source_file = b.path("src/tls_chain.zig"), .target = target, .optimize = optimize });
+    const tls_client = b.createModule(.{
+        .root_source_file = b.path("deps/zig-tls/Client.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "tls_chain", .module = tls_chain }},
+    });
+    const http_client = b.createModule(.{
+        .root_source_file = b.path("deps/zig-tls/HttpClient.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zig_tls", .module = tls_client }},
+    });
+    return .{ .tls_chain = tls_chain, .tls_client = tls_client, .http_client = http_client };
+}
+
+/// tools/zig_tls.zig writes deps/zig-tls from std's two files in the Zig
+/// that builds rest-core (`zig build zig-tls`), and `zig build test`
+/// fails when the copies are not exactly that, so a Zig upgrade, or an
+/// edit by hand, cannot leave an old copy behind.
+fn addZigTlsCheck(b: *std.Build, test_step: *std.Build.Step, test_runner: std.Build.Step.Compile.TestRunner) void {
+    const tool = b.addExecutable(.{ .name = "zig-tls", .root_module = b.createModule(.{
+        .root_source_file = b.path("tools/zig_tls.zig"),
+        .target = b.graph.host,
+        .optimize = .safe,
+    }) });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = tool.root_module, .test_runner = test_runner })).step);
+    inline for (.{ "--write", "--check" }) |mode| {
+        const run = b.addRunArtifact(tool);
+        run.setCwd(b.path("."));
+        run.addArg(mode);
+        run.addFileArg(std.Build.LazyPath.zig_lib.path(b, "std/crypto/tls/Client.zig"));
+        run.addFileArg(std.Build.LazyPath.zig_lib.path(b, "std/http/Client.zig"));
+        run.addArg("deps/zig-tls");
+        run.has_side_effects = true;
+        if (comptime std.mem.eql(u8, mode, "--write"))
+            b.step("zig-tls", "Write deps/zig-tls from this Zig's std: its TLS and HTTP clients, patched (t78)").dependOn(&run.step)
+        else
+            test_step.dependOn(&run.step);
+    }
 }
 
 /// The examples' module, over `rest_core` built as `mod` is.

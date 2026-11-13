@@ -7,5 +7,7 @@
     .minimum_zig_version = "0.17.1",
     // std only.
     .dependencies = .{},
-    .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md", "CHANGELOG.md" },
+    // deps/zig-tls is std's TLS and HTTP clients, copied and patched (t78):
+    // the transport builds on it, so it ships.
+    .paths = .{ "build.zig", "build.zig.zon", "src", "deps", "LICENSE", "README.md", "CHANGELOG.md" },
 }
