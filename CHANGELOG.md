@@ -4,6 +4,15 @@ Until 1.0, minor versions may break the API; each entry says how.
 
 ## Unreleased
 
+- Security catalog: CONN-11 and CONN-12, two gaps in Zig 0.17.1's TLS
+  client, which the transport has through `std.http.Client`. It reads
+  past a malformed certificate a server sends, before checking anything,
+  and it copies an RSA signature longer than the server's key past a
+  buffer on the stack. A safe build panics; ReleaseFast reads and writes
+  out of bounds. test/security/std_tls_test.zig holds std to both, over
+  canned TLS 1.2 flights each run in a process of its own
+  (test/security/std_tls_probe.zig). SECURITY.md and docs/essentials.md
+  say to build ReleaseSafe until std fixes them. From ekur.
 - `HttpTransport`: an `error.Unexpected` from making a connection is
   `ConnectionResetByPeer` on every platform, and so retried, where off
   Windows it was a permanent `NetworkFailure`. On macOS a signal in a
