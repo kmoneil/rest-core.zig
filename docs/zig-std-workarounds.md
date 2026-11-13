@@ -113,6 +113,21 @@ last group was found while porting it. Each was checked against Zig
   bearer token. `std.http.Client` builds the TLS client and verifies the
   chain itself, out of the transport's reach. Not worked around:
   test/security/CATALOG.md, CONN-10, and card t31.
+- `std.crypto.Certificate`'s DER reader checks no length against the
+  bytes it is given, and `std.crypto.tls.Client` parses every certificate
+  a server sends before it checks any. A certificate that claims more
+  bytes than it holds, a subjectAltName whose names do, an empty BIT
+  STRING last in a certificate, or an issuer's RSA key that runs past
+  itself is read out of bounds: a panic in a safe build. No upstream
+  issue found. The client also copies an RSA signature into a buffer the
+  size of the server's key without checking its length
+  (`PKCS1v1_5Signature.fromBytes` and `PSSSignature.fromBytes`; PR
+  ziglang/zig#36695, open), so a longer one writes past a buffer on the
+  stack in ReleaseFast. Found by ekur, which carries its own copy of the
+  client; reproduced on 0.17.1, and master is the same. `std.http.Client`
+  builds the TLS client, out of the transport's reach. Not worked around:
+  test/security/CATALOG.md, CONN-11 and CONN-12, and card t78; until std
+  fixes them, a program should be built ReleaseSafe.
 - `std.crypto.tls.Client` cannot join a handshake message split across
   records, which RFC 8446 5.1 allows a server to send. Under TLS 1.3 it
   reads the record after the Certificate message into its other buffer,

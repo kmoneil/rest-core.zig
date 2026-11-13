@@ -22,6 +22,9 @@ test {
     _ = @import("retry_test.zig");
     _ = @import("rsa_test.zig");
     _ = @import("secrets_test.zig");
+    // Below the public API: std's TLS client, which the transport cannot
+    // reach into, held to its bugs (CONN-11, CONN-12).
+    _ = @import("std_tls_test.zig");
     _ = @import("time_test.zig");
     _ = @import("transport_test.zig");
 }

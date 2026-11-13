@@ -51,3 +51,20 @@ can sign one for any host, and a man in the middle that presents it is
 trusted with the bearer token. Every Zig 0.17.1 HTTPS client shares it.
 The catalog's CONN-10 tracks it, with a test that fails once std fixes
 it.
+
+**A TLS server's bytes can crash the client, and in ReleaseFast go out
+of bounds.** The same TLS client reads every certificate a server sends
+with a DER parser that checks no length against the bytes it was given,
+before it checks any signature or name: a malformed certificate panics
+a safe build and reads past its buffer in ReleaseFast, and a man in the
+middle needs no certificate of their own to send one (no upstream issue
+found). It also copies an RSA signature into a buffer the size of the
+server's key without checking its length, so one longer than the key
+panics a safe build and writes past a buffer on the stack in
+ReleaseFast; that needs a chain the client trusts, which any server with
+a certificate for the host has, and which CONN-10 lets a man in the
+middle make (the fix, PR ziglang/zig#36695, is not merged). Every Zig
+0.17.1 HTTPS client shares both. Until std fixes them, build a program
+that uses rest-core over a network ReleaseSafe, not ReleaseFast: then a
+crash is the worst a server can do. The catalog's CONN-11 and CONN-12
+track them, with tests that fail once std fixes them.

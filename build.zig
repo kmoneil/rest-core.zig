@@ -41,11 +41,25 @@ pub fn build(b: *std.Build) void {
         .test_runner = test_runner,
         .use_llvm = if (fuzz_runner) true else null,
     })).step);
+    // test/security/std_tls_probe.zig: std's TLS client handed a hostile
+    // server's first flight, a case a run, for std_tls_test.zig. std panics
+    // on each, so each runs in a process of its own, built Debug in every
+    // mode the suite is: in ReleaseFast the same bytes go out of bounds
+    // unseen.
+    const std_tls_probe = b.addExecutable(.{ .name = "std-tls-probe", .root_module = b.createModule(.{
+        .root_source_file = b.path("test/security/std_tls_probe.zig"),
+        .target = target,
+        .optimize = .debug,
+    }) });
+    const probe_bin = b.addOptions();
+    probe_bin.addOptionPath("path", std_tls_probe.getEmittedBin());
+    const probe_mod = probe_bin.createModule();
+
     // The security suite (test/security): a test per known attack, through
     // the public API only. Each is a row of test/security/CATALOG.md.
     const security_tests = b.addTest(.{
         .name = "security",
-        .root_module = securityModule(b, target, optimize, mod),
+        .root_module = securityModule(b, target, optimize, mod, probe_mod),
         .filters = test_filters,
         .test_runner = test_runner,
         .use_llvm = if (fuzz_runner) true else null,
@@ -96,7 +110,7 @@ pub fn build(b: *std.Build) void {
         })).step);
         release_step.dependOn(&b.addRunArtifact(b.addTest(.{
             .name = b.fmt("security-{t}", .{mode}),
-            .root_module = securityModule(b, target, mode, release_mod),
+            .root_module = securityModule(b, target, mode, release_mod, probe_mod),
             .filters = test_filters,
             .test_runner = test_runner,
         })).step);
@@ -222,12 +236,16 @@ pub fn build(b: *std.Build) void {
 }
 
 /// The security suite's module, over `rest_core` built as `mod` is.
-fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, mod: *std.Build.Module) *std.Build.Module {
+fn securityModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize, mod: *std.Build.Module, probe: *std.Build.Module) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("test/security/security_test.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "rest_core", .module = mod }},
+        .imports = &.{
+            .{ .name = "rest_core", .module = mod },
+            // std_tls_probe.zig's program, which std_tls_test.zig runs.
+            .{ .name = "std_tls_probe_bin", .module = probe },
+        },
     });
 }
 
