@@ -30,7 +30,8 @@ last group was found while porting it. Each was checked against Zig
 - On Windows, std maps only the socket statuses it expects, and any other
   arrives as `error.Unexpected`. The transport reads that as a dropped
   connection and retries; on other platforms `error.Unexpected` stays a
-  permanent `NetworkFailure`.
+  permanent `NetworkFailure` once a request is under way (making the
+  connection is below, under "Found here").
 - `std.Io.Writer.Hashing.init` passes an argument to its hasher's `init`,
   which a CRC hasher's does not take; the tests call `initHasher`.
 - `std.testing.allocator` records a stack trace for every allocation, and
@@ -81,6 +82,19 @@ last group was found while porting it. Each was checked against Zig
   Connecting around std is not done: `Connection.Tls.create` is private
   in 0.17.1, so it would mean carrying std's TLS connection setup.
   Documented, not worked around: test/security/CATALOG.md, CONN-08.
+- `std.Io.Threaded`'s connect calls `connect()` again when a signal
+  interrupts it, and on macOS the second call answers EISCONN at once
+  while the first goes on in the kernel. std takes that for a programmer's
+  bug (Codeberg ziglang/zig#31391, open): a Debug build panics ("programmer
+  bug caused syscall error: ISCONN"), and a release build closes the socket,
+  which was fine, and returns `error.Unexpected`. The signal can be
+  `Io.Threaded`'s own cancel, arriving late, since `HostName.connect`
+  cancels the addresses that lose its race. Reproduced on 0.17.1 under
+  ReleaseSafe, every run: a connect to an address that never answers, sent
+  one SIGIO after 200 ms. The transport reads `error.Unexpected` from
+  making a connection, where nothing has been sent, as a dropped
+  connection, so it is retried. The panic is out of its reach: a program
+  that talks to a network for long on a Mac should not be a Debug build.
 - `std.http.Client` reads `HTTP_PROXY` and `HTTPS_PROXY` only when asked,
   and HTTPS through its proxies goes in cleartext (Codeberg
   ziglang/zig#35294). The transport never asks for proxies.

@@ -2,6 +2,17 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
+## Unreleased
+
+- `HttpTransport`: an `error.Unexpected` from making a connection is
+  `ConnectionResetByPeer` on every platform, and so retried, where off
+  Windows it was a permanent `NetworkFailure`. On macOS a signal in a
+  blocking connect (`Io.Threaded`'s own cancel, late) makes std's second
+  `connect()` answer EISCONN, which std calls a programmer's bug
+  (Codeberg ziglang/zig#31391): `error.Unexpected` in a release build,
+  though nothing was sent and the socket was fine. A Debug build panics
+  there, in std, out of the transport's reach. From puffball.zig.
+
 ## 0.5.0 (2026-11-07)
 
 A signer for each attempt, for clients that sign requests rather than

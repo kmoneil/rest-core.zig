@@ -470,7 +470,7 @@ pub const HttpTransport = struct {
                 .accept_encoding = acceptEncoding(req.accept_encoding),
             },
             .extra_headers = req.headers,
-        }) catch |err| return mapError(err, null);
+        }) catch |err| return mapConnectError(err);
         defer request.deinit();
         const connection = request.connection.?;
         // Any failure from here on closes the connection, the one place it
@@ -499,7 +499,7 @@ pub const HttpTransport = struct {
     fn preconnect(self: *HttpTransport, uri: std.Uri, protocol: http.Client.Protocol) Error!?*http.Client.Connection {
         const address = ipv6Literal(uri) orelse return null;
         if (protocol != .plain) return null;
-        return self.client.connectTcp(.{ .bytes = address }, uri.port orelse 80, .plain) catch |err| return mapError(err, null);
+        return self.client.connectTcp(.{ .bytes = address }, uri.port orelse 80, .plain) catch |err| return mapConnectError(err);
     }
 
     /// What follows a response's head: its framing checked, the responses
@@ -1151,7 +1151,8 @@ fn mapError(err: anyerror, connection: ?*http.Client.Connection) Error {
         // peer that hangs up mid-read or write (STATUS_LOCAL_DISCONNECT),
         // which 0.17.1 maps. Which status it was is lost by now, and a
         // hang-up is worth retrying, so call it a dropped connection.
-        // Elsewhere std maps every socket error it expects.
+        // Elsewhere std maps every socket error it expects once a request
+        // is under way; making the connection is `mapConnectError`'s.
         error.Unexpected => if (builtin.target.os.tag == .windows) error.ConnectionResetByPeer else error.NetworkFailure,
 
         error.HttpHeadersOversize,
@@ -1171,6 +1172,21 @@ fn mapError(err: anyerror, connection: ?*http.Client.Connection) Error {
 
         else => error.NetworkFailure,
     };
+}
+
+/// `mapError` for a failure in making the connection: std's
+/// `Client.request` connects, TLS handshake and all, and sends nothing.
+/// There `error.Unexpected` is a dropped connection on every platform.
+/// std's connect calls `connect()` again when a signal interrupts it, and
+/// on macOS the second call answers EISCONN at once while the first goes
+/// on in the kernel; std takes that for a programmer's bug (Codeberg
+/// ziglang/zig#31391), which a release build returns as `error.Unexpected`,
+/// the socket closed. The signal can be `Io.Threaded`'s own cancel, late:
+/// `HostName.connect` cancels the addresses that lose its race. Nothing
+/// was sent, so another attempt is safe; an errno that is a real bug fails
+/// each attempt the same way, until the retries run out.
+fn mapConnectError(err: anyerror) Error {
+    return if (err == error.Unexpected) error.ConnectionResetByPeer else mapError(err, null);
 }
 
 /// A read or write failed but the socket recorded no error, so the TLS layer
@@ -2346,12 +2362,21 @@ test "HttpTransport maps a refused connection" {
     try testing.expectError(error.ConnectionRefused, ht.transport().send(.{ .method = .GET, .url = url }, arena.allocator()));
 }
 
-test "mapError: an unmapped socket status on Windows is a dropped connection" {
+test "mapError: an unmapped socket status is a dropped connection on Windows, and anywhere while connecting" {
     // Regression: CI on Windows showed a refused connection and a hang-up
     // arriving as error.Unexpected, which was a permanent NetworkFailure, so
     // neither was retried.
     const expected: Error = if (builtin.target.os.tag == .windows) error.ConnectionResetByPeer else error.NetworkFailure;
     try testing.expectEqual(expected, mapError(error.Unexpected, null));
+    // Regression (t79): on macOS a signal in a blocking connect makes std
+    // try again and get EISCONN, error.Unexpected in a release build (seen
+    // on Zig 0.17.1, Codeberg ziglang/zig#31391), which was a permanent
+    // NetworkFailure off Windows though nothing had been sent.
+    try testing.expectEqual(error.ConnectionResetByPeer, mapConnectError(error.Unexpected));
+    // Every other failure in connecting maps as it does after.
+    try testing.expectEqual(error.ConnectionRefused, mapConnectError(error.ConnectionRefused));
+    try testing.expectEqual(error.NameServerFailure, mapConnectError(error.ResolvConfParseFailed));
+    try testing.expectEqual(error.NetworkFailure, mapConnectError(error.SystemResources));
 }
 
 test "HttpTransport refuses, before connecting, a URL that would go out other than as written" {
