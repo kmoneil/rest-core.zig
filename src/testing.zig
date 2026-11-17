@@ -915,7 +915,8 @@ pub const ScriptedServer = struct {
         return s.seen[index][0..s.seen_len[index]];
     }
 
-    /// Serves every scripted reply, then returns.
+    /// Serves every scripted reply, then returns. A cancel ends it with
+    /// error.Canceled, wherever it lands.
     pub fn run(s: *ScriptedServer, io: std.Io) !void {
         if (s.close_on_accept) {
             const stream = try s.server.accept(io);
@@ -947,16 +948,31 @@ pub const ScriptedServer = struct {
         while (served < s.per_connection and (next.* < s.replies.len or s.hang)) : (served += 1) {
             // A client that closes before its next request ends this
             // connection, and the next is accepted; `connections` shows it.
-            if (!try s.readRequest(&reader.interface)) return true;
+            const got = s.readRequest(&reader.interface) catch |err|
+                return if (wasCanceled(reader.err)) error.Canceled else err;
+            if (!got) return true;
             if (s.hang) {
                 // Wait until the client gives up; the read fails or ends then.
-                _ = reader.interface.discardRemaining() catch {};
+                _ = reader.interface.discardRemaining() catch {
+                    if (wasCanceled(reader.err)) return error.Canceled;
+                    return false;
+                };
                 return false;
             }
-            try s.reply(io, &writer.interface, next.*);
+            // On Windows a cancel can land after the last byte is out, as
+            // the send's completion is awaited (t80).
+            s.reply(io, &writer.interface, next.*) catch |err|
+                return if (wasCanceled(writer.err)) error.Canceled else err;
             next.* += 1;
         }
         return true;
+    }
+
+    /// Whether a stream reader's or writer's `err` is a cancel. Std's
+    /// reader and writer report it only as ReadFailed or WriteFailed.
+    fn wasCanceled(cause: anytype) bool {
+        const err = cause orelse return false;
+        return err == error.Canceled;
     }
 
     /// Writes reply `index`, held at `pause` when it is the first.
@@ -2274,6 +2290,76 @@ test "ScriptedServer: a cancel while it lingers ends the run" {
     const started = std.Io.Clock.awake.now(io);
     try std.testing.expectError(error.Canceled, serving.cancel(io));
     try std.testing.expect(started.untilNow(io, .awake).toMilliseconds() < 5_000);
+}
+
+test "ScriptedServer: a cancel while it writes ends the run Canceled" {
+    // The reply is larger than both ends' socket buffers hold, and the
+    // client takes one byte of it and no more, so the cancel finds the
+    // server in its write. On Windows a cancel can land there even after
+    // the last byte is out (t80).
+    const io = std.testing.io;
+    const body_len = 32 * 1024 * 1024;
+    const head = std.fmt.comptimePrint("HTTP/1.1 200 OK\r\nContent-Length: {d}\r\n\r\n", .{body_len});
+    const big = try std.testing.allocator.alloc(u8, head.len + body_len);
+    defer std.testing.allocator.free(big);
+    @memcpy(big[0..head.len], head);
+    @memset(big[head.len..], 'x');
+    var server: ScriptedServer = try .start(io, &.{big});
+    defer server.deinit(io);
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    const stream = try server.server.socket.address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+    var write_buf: [64]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
+    try writer.interface.writeAll("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+    try writer.interface.flush();
+    var read_buf: [1]u8 = undefined;
+    var reader = stream.reader(io, &read_buf);
+    try std.testing.expectEqual('H', try reader.interface.takeByte());
+    try std.testing.expectError(error.Canceled, serving.cancel(io));
+}
+
+test "ScriptedServer: a cancel while it reads the next request ends the run Canceled" {
+    // Once the client holds the whole first reply, the server is reading
+    // for the second request on that connection.
+    const io = std.testing.io;
+    const ok = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+    var server: ScriptedServer = try .start(io, &.{ ok, ok });
+    defer server.deinit(io);
+    server.per_connection = 2;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    const stream = try server.server.socket.address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+    var write_buf: [64]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
+    try writer.interface.writeAll("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+    try writer.interface.flush();
+    var read_buf: [64]u8 = undefined;
+    var reader = stream.reader(io, &read_buf);
+    try std.testing.expectEqualStrings(ok, try reader.interface.take(ok.len));
+    try std.testing.expectError(error.Canceled, serving.cancel(io));
+}
+
+test "ScriptedServer: a cancel while it hangs ends the run Canceled" {
+    // Wherever the cancel lands (the accept, the read of the request, or
+    // the wait after it), the run ends Canceled.
+    const io = std.testing.io;
+    var server: ScriptedServer = try .start(io, &.{"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"});
+    defer server.deinit(io);
+    server.hang = true;
+    var serving = try io.concurrent(ScriptedServer.run, .{ &server, io });
+    defer _ = serving.cancel(io) catch {};
+    const stream = try server.server.socket.address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+    var write_buf: [64]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
+    try writer.interface.writeAll("GET / HTTP/1.1\r\nHost: x\r\n\r\n");
+    try writer.interface.flush();
+    // Time to reach the wait; the run ends Canceled whether it has or not.
+    try io.sleep(.fromMilliseconds(50), .awake);
+    try std.testing.expectError(error.Canceled, serving.cancel(io));
 }
 
 test "ScriptedServer: a client that closes before its next request ends that connection, not the run" {
