@@ -2,6 +2,18 @@
 
 Until 1.0, minor versions may break the API; each entry says how.
 
+## Unreleased
+
+- Fixed: a cancel of `testing.ScriptedServer`'s run ends it with
+  `error.Canceled` wherever it lands. In a write or a read of the stream
+  it was `error.WriteFailed` or `error.ReadFailed`, std's reader and
+  writer keeping the cancel on the stream, and in a `hang` server's wait
+  the run returned without an error. On Windows a cancel can land in a
+  write after its last byte is out, as the send's completion is awaited,
+  so "a cancel while it lingers ends the run" failed now and then in CI.
+  A test that expected `WriteFailed`, `ReadFailed` or no error from a
+  canceled run gets `Canceled` now.
+
 ## 0.6.0 (2026-11-13)
 
 TLS that refuses the certificates Zig 0.17.1's own client takes or
